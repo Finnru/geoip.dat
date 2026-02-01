@@ -1,4 +1,4 @@
-name: Build-and-Publish-GeoIP
+name: Build-GeoIP-Final
 on:
   workflow_dispatch:
   push:
@@ -6,22 +6,18 @@ on:
       - master
       - main
 
-permissions:
-  contents: write
-
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
+          cache: false
 
       - name: Create Generator Script
         run: |
@@ -43,15 +39,16 @@ jobs:
           func main() {
             list := &router.GeoIPList{}
             
-            // Читаем все файлы из папки data (включая ru, private, telegram)
+            // Читаем все файлы из папки data
             files, err := os.ReadDir("./data")
             if err != nil {
-              log.Fatal(err)
+              log.Fatal("Could not read data directory:", err)
             }
 
             for _, f := range files {
               if f.IsDir() { continue }
               
+              // Имя файла без расширения станет тегом (например, RU, TELEGRAM)
               tag := strings.ToUpper(f.Name())
               log.Printf("Processing tag: %s", tag)
               
@@ -59,17 +56,19 @@ jobs:
               
               file, err := os.Open(filepath.Join("./data", f.Name()))
               if err != nil {
+                log.Printf("Error opening file %s: %v", f.Name(), err)
                 continue
               }
 
               scanner := bufio.NewScanner(file)
               for scanner.Scan() {
                 line := strings.TrimSpace(scanner.Text())
+                // Пропускаем пустые строки и комментарии
                 if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "//") {
                   continue
                 }
 
-                // Парсим CIDR (например 1.2.3.4/24)
+                // Парсим CIDR
                 _, ipnet, err := net.ParseCIDR(line)
                 if err == nil {
                   mask, _ := ipnet.Mask.Size()
@@ -78,7 +77,7 @@ jobs:
                     Prefix: uint32(mask),
                   })
                 } else {
-                  // Парсим одиночный IP (например 1.2.3.4) как /32
+                  // Попытка спарсить одиночный IP как /32
                   ip := net.ParseIP(line)
                   if ip != nil {
                     geoip.Cidr = append(geoip.Cidr, &router.CIDR{
@@ -92,43 +91,39 @@ jobs:
               list.Entry = append(list.Entry, geoip)
             }
 
+            // Сериализация в Protobuf
             out, err := proto.Marshal(list)
             if err != nil {
-              log.Fatal(err)
+              log.Fatal("Failed to encode GeoIP:", err)
             }
 
-            os.WriteFile("geoip.dat", out, 0644)
-            log.Println("Success: geoip.dat created")
+            // Запись готового файла
+            err = os.WriteFile("geoip.dat", out, 0644)
+            if err != nil {
+              log.Fatal("Failed to write geoip.dat:", err)
+            }
+            
+            log.Println("Successfully created geoip.dat with", len(list.Entry), "tags")
           }
           EOF
 
       - name: Build and Run
         run: |
+          # Инициализируем модуль
           go mod init geoipbuild
-          # Берем только то, что нужно для генерации структуры
+          
+          # Устанавливаем зависимости
           go get github.com/v2fly/v2ray-core/v5@v5.22.0
           go get google.golang.org/protobuf/proto
           
-          # Очищаем зависимости от лишнего мусора (hysteria и прочих)
+          # Ключевой момент: скачиваем все транзитивные зависимости (idna, netipx и т.д.)
           go mod tidy
           
-          # Запускаем сборку
+          # Запускаем генератор
           go run builder.go
 
-      - name: Deploy to Release Branch
-        run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          
-          # Сохраняем результат
-          mkdir /tmp/publish
-          cp geoip.dat /tmp/publish/
-          
-          # Переключаемся на ветку release
-          git checkout --orphan release || git checkout release
-          git rm -rf .
-          cp /tmp/publish/geoip.dat .
-          
-          git add geoip.dat
-          git commit -m "Update GeoIP database $(date +'%Y-%m-%d %H:%M')"
-          git push origin release --force
+      - name: Upload Result
+        uses: actions/upload-artifact@v4
+        with:
+          name: geoip-artifact
+          path: geoip.dat
