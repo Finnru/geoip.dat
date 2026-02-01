@@ -14,12 +14,16 @@ jobs:
         with:
           go-version: '1.24'
 
-      - name: Build
+      - name: Build GeoIP
         run: |
-          go install github.com/v2fly/geoip@latest
-          # Пробуем тип "text", который используется для текстовых списков CIDR
-          echo '{"input":[{"type":"text","action":"add","args":{"uri":"./data"}}],"output":[{"type":"text","action":"serialize","args":{"uri":"geoip.dat"}}]}' > config.json
-          $(go env GOPATH)/bin/geoip -c config.json
+          # Устанавливаем основной инструмент v2ray
+          go install github.com/v2fly/v2ray-core/v5/main@latest
+          
+          # Запускаем конвертацию: 
+          # --type=geoip (что делаем)
+          # --input=./data (откуда берем файлы private, ru, telegram)
+          # --output=geoip.dat (как называем результат)
+          $(go env GOPATH)/bin/main convert proto --type=geoip --input=./data --output=geoip.dat
 
       - name: Upload
         uses: actions/upload-artifact@v4
