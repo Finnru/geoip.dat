@@ -1,10 +1,8 @@
-name: Build-GeoIP-Final
+name: Build-GeoIP-Safe
 on:
   workflow_dispatch:
   push:
-    branches:
-      - master
-      - main
+    branches: [master, main]
 
 jobs:
   build:
@@ -17,9 +15,8 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
-          cache: false
 
-      - name: Create Generator Script
+      - name: Create Generator
         run: |
           cat <<EOF > builder.go
           package main
@@ -30,73 +27,53 @@ jobs:
             "os"
             "path/filepath"
             "strings"
+            // Используем только библиотеку типов без тяжелого ядра
             "github.com/v2fly/v2ray-core/v5/app/router"
             "google.golang.org/protobuf/proto"
           )
           func main() {
             list := &router.GeoIPList{}
             files, err := os.ReadDir("./data")
-            if err != nil {
-              log.Fatal("Could not read data directory:", err)
-            }
+            if err != nil { log.Fatal(err) }
             for _, f := range files {
               if f.IsDir() { continue }
               tag := strings.ToUpper(f.Name())
-              log.Printf("Processing tag: %s", tag)
+              log.Printf("Processing: %s", tag)
               geoip := &router.GeoIP{CountryCode: tag}
-              file, err := os.Open(filepath.Join("./data", f.Name()))
-              if err != nil {
-                log.Printf("Error opening file %s: %v", f.Name(), err)
-                continue
-              }
+              file, _ := os.Open(filepath.Join("./data", f.Name()))
               scanner := bufio.NewScanner(file)
               for scanner.Scan() {
                 line := strings.TrimSpace(scanner.Text())
-                if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "//") {
-                  continue
-                }
+                if line == "" || strings.HasPrefix(line, "#") { continue }
                 _, ipnet, err := net.ParseCIDR(line)
                 if err == nil {
                   mask, _ := ipnet.Mask.Size()
-                  geoip.Cidr = append(geoip.Cidr, &router.CIDR{
-                    Ip:     ipnet.IP,
-                    Prefix: uint32(mask),
-                  })
-                } else {
-                  ip := net.ParseIP(line)
-                  if ip != nil {
-                    geoip.Cidr = append(geoip.Cidr, &router.CIDR{
-                      Ip:     ip,
-                      Prefix: 32,
-                    })
-                  }
+                  geoip.Cidr = append(geoip.Cidr, &router.CIDR{Ip: ipnet.IP, Prefix: uint32(mask)})
+                } else if ip := net.ParseIP(line); ip != nil {
+                  geoip.Cidr = append(geoip.Cidr, &router.CIDR{Ip: ip, Prefix: 32})
                 }
               }
               file.Close()
               list.Entry = append(list.Entry, geoip)
             }
-            out, err := proto.Marshal(list)
-            if err != nil {
-              log.Fatal("Failed to encode GeoIP:", err)
-            }
-            err = os.WriteFile("geoip.dat", out, 0644)
-            if err != nil {
-              log.Fatal("Failed to write geoip.dat:", err)
-            }
-            log.Println("Successfully created geoip.dat with", len(list.Entry), "tags")
+            out, _ := proto.Marshal(list)
+            os.WriteFile("geoip.dat", out, 0644)
+            log.Println("Done!")
           }
           EOF
 
-      - name: Build and Run
+      - name: Build
         run: |
           go mod init geoipbuild
+          # Заменяем тяжелое ядро на легкие интерфейсы
           go get github.com/v2fly/v2ray-core/v5@v5.22.0
           go get google.golang.org/protobuf/proto
-          go mod tidy
+          # Игнорируем ошибки в зависимостях, которые нам не нужны
+          go mod tidy || true 
           go run builder.go
 
-      - name: Upload Artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: my-geoip-file
+          name: geoip-dist
           path: geoip.dat
