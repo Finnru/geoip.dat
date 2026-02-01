@@ -1,4 +1,4 @@
-name: Build-GeoIP-Final
+name: Build-and-Publish-GeoIP
 on:
   workflow_dispatch:
   push:
@@ -6,24 +6,27 @@ on:
       - master
       - main
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
-          cache: false
 
       - name: Create Generator Script
         run: |
           cat <<EOF > builder.go
           package main
-
           import (
             "bufio"
             "log"
@@ -31,86 +34,63 @@ jobs:
             "os"
             "path/filepath"
             "strings"
-
             "github.com/v2fly/v2ray-core/v5/app/router"
             "google.golang.org/protobuf/proto"
           )
-
           func main() {
             list := &router.GeoIPList{}
-            
-            // Читаем все файлы из папки data
-            files, err := os.ReadDir("./data")
-            if err != nil {
-              log.Fatal("Could not read data directory:", err)
-            }
-
+            files, _ := os.ReadDir("./data")
             for _, f := range files {
               if f.IsDir() { continue }
-              
-              // Имя файла без расширения станет тегом (например, RU, TELEGRAM)
               tag := strings.ToUpper(f.Name())
               log.Printf("Processing tag: %s", tag)
-              
               geoip := &router.GeoIP{CountryCode: tag}
-              
-              file, err := os.Open(filepath.Join("./data", f.Name()))
-              if err != nil {
-                log.Printf("Error opening file %s: %v", f.Name(), err)
-                continue
-              }
-
+              file, _ := os.Open(filepath.Join("./data", f.Name()))
               scanner := bufio.NewScanner(file)
               for scanner.Scan() {
                 line := strings.TrimSpace(scanner.Text())
-                // Пропускаем пустые строки и комментарии
                 if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "//") {
                   continue
                 }
-
-                // Парсим CIDR
                 _, ipnet, err := net.ParseCIDR(line)
                 if err == nil {
                   mask, _ := ipnet.Mask.Size()
-                  geoip.Cidr = append(geoip.Cidr, &router.CIDR{
-                    Ip:     ipnet.IP,
-                    Prefix: uint32(mask),
-                  })
-                } else {
-                  // Попытка спарсить одиночный IP как /32
-                  ip := net.ParseIP(line)
-                  if ip != nil {
-                    geoip.Cidr = append(geoip.Cidr, &router.CIDR{
-                      Ip:     ip,
-                      Prefix: 32,
-                    })
-                  }
+                  geoip.Cidr = append(geoip.Cidr, &router.CIDR{Ip: ipnet.IP, Prefix: uint32(mask)})
+                } else if ip := net.ParseIP(line); ip != nil {
+                  geoip.Cidr = append(geoip.Cidr, &router.CIDR{Ip: ip, Prefix: 32})
                 }
               }
               file.Close()
               list.Entry = append(list.Entry, geoip)
             }
-
-            // Сериализация в Protobuf
-            out, err := proto.Marshal(list)
-            if err != nil {
-              log.Fatal("Failed to encode GeoIP:", err)
-            }
-
-            // Запись готового файла
-            err = os.WriteFile("geoip.dat", out, 0644)
-            if err != nil {
-              log.Fatal("Failed to write geoip.dat:", err)
-            }
-            
-            log.Println("Successfully created geoip.dat with", len(list.Entry), "tags")
+            out, _ := proto.Marshal(list)
+            os.WriteFile("geoip.dat", out, 0644)
+            log.Println("Success: geoip.dat created")
           }
           EOF
 
       - name: Build and Run
         run: |
-          # Инициализируем модуль
           go mod init geoipbuild
+          go get github.com/v2fly/v2ray-core/v5@v5.22.0
+          go get google.golang.org/protobuf/proto
+          go mod tidy
+          go run builder.go
+
+      - name: Deploy to Release Branch
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
           
-          # Устанавливаем зависимости
-          go get
+          # Создаем временную папку для артефакта
+          mkdir /tmp/publish
+          cp geoip.dat /tmp/publish/
+          
+          # Переключаемся на ветку release (создаем, если нет)
+          git checkout --orphan release || git checkout release
+          git rm -rf .
+          cp /tmp/publish/geoip.dat .
+          
+          git add geoip.dat
+          git commit -m "Update GeoIP database $(date +'%Y-%m-%d %H:%M')"
+          git push origin release --force
