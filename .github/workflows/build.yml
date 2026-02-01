@@ -1,31 +1,24 @@
+name: Build
+on:
+  workflow_dispatch:
+  push:
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           go-version: '1.24'
-          cache: false
-
-      - name: Build Geosite (Domains)
-        run: |
+      - run: |
           go install github.com/v2fly/domain-list-community@latest
-          $(go env GOPATH)/bin/domain-list-community --datapath=./data --outputdir=./ --outputname=geosite.dat
-
-      - name: Build GeoIP (IP Addresses)
-        run: |
           go install github.com/v2fly/geoip@latest
-          # Если твои IP лежат в папке data, используем её
+          $(go env GOPATH)/bin/domain-list-community --datapath=./data --outputdir=./ --outputname=geosite.dat
           $(go env GOPATH)/bin/geoip --datapath=./data --outputdir=./ --outputname=geoip.dat
-
-      - name: Upload Files
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: geodata-bundle
+          name: geodata
           path: |
             geosite.dat
             geoip.dat
