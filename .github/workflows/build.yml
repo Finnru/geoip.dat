@@ -13,49 +13,28 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
-          # Отключаем автоматический кэш, так как у нас нет go.sum
           cache: false
 
       - name: Build GeoIP
         run: |
-          # 1. Устанавливаем легкий генератор
-          go install github.com/v2fly/geoip@latest
+          # 1. Устанавливаем стабильный v2ray-core
+          go install github.com/v2fly/v2ray-core/v5/main@latest
           
-          # 2. Создаем папку для очищенных данных
-          mkdir -p ./cleaned_data
+          # 2. Чистим и проверяем данные
+          mkdir -p ./output
           
-          # 3. Максимально быстрая очистка файлов (только валидные IPv4)
+          # Мы превращаем каждый твой файл в формат, который v2ray понимает без лишних конфигов
+          # Формат внутри должен быть: IP/Mask
           for file in ./data/*; do
-            filename=$(basename "$file")
-            grep -oE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(/[0-9]{1,2})?' "$file" > "./cleaned_data/$filename" || true
+            tag=$(basename "$file")
+            echo "Processing tag: $tag"
+            # Очистка: только цифры, точки и слеши. Удаляем пустые строки.
+            grep -oE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(/[0-9]{1,2})?' "$file" > "clean_$tag" || true
           done
 
-          # 4. Создаем конфиг. Мы используем тип "v2ray-geoip" (самый актуальный для этой версии)
-          cat <<EOF > config.json
-          {
-            "input": [
-              {
-                "type": "v2ray-geoip",
-                "action": "add",
-                "args": {
-                  "uri": "./cleaned_data"
-                }
-              }
-            ],
-            "output": [
-              {
-                "type": "v2ray-geoip",
-                "action": "serialize",
-                "args": {
-                  "uri": "geoip.dat"
-                }
-              }
-            ]
-          }
-          EOF
-
-          # 5. Запуск. Если памяти не хватает, Go сам попробует оптимизировать процесс
-          GOGC=50 $(go env GOPATH)/bin/geoip -c config.json
+          # 3. Собираем GEOIP.DAT напрямую через v2ray convert
+          # Мы используем упрощенный синтаксис, который не требует config.json
+          $(go env GOPATH)/bin/main convert proto --type=geoip --input=./data --output=geoip.dat
 
       - name: Upload
         uses: actions/upload-artifact@v4
