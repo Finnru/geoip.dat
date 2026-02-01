@@ -1,4 +1,4 @@
-name: Build-GeoIP-Final
+name: Build-GeoIP-Raw
 on:
   workflow_dispatch:
   push:
@@ -18,89 +18,94 @@ jobs:
 
       - name: Create Generator Script
         run: |
-          # Мы не импортируем v2ray-core, а создаем нужные структуры сами
           cat <<EOF > builder.go
           package main
 
           import (
           	"bufio"
+          	"encoding/binary"
+          	"fmt"
           	"log"
           	"net"
           	"os"
           	"path/filepath"
           	"strings"
-          	"google.golang.org/protobuf/proto"
-          	"google.golang.org/protobuf/reflect/protoreflect"
-          	"google.golang.org/protobuf/runtime/protoimpl"
           )
 
-          // Описываем структуры v2fly вручную, чтобы не качать их битые модули
-          type CIDR struct {
-          	state         protoimpl.MessageState
-          	Ip            []byte \`protobuf:"bytes,1,opt,name=ip,proto3"\`
-          	Prefix        uint32 \`protobuf:"varint,2,opt,name=prefix,proto3"\`
+          // Пишем Varint (стандарт упаковки чисел в Protobuf)
+          func writeVarint(v uint32) []byte {
+          	var buf [binary.MaxVarintLen32]byte
+          	n := binary.PutUvarint(buf[:], uint64(v))
+          	return buf[:n]
           }
-          func (x *CIDR) ProtoReflect() protoreflect.Message { return nil }
-          func (x *CIDR) String() string { return "" }
-          func (x *CIDR) ProtoMessage() {}
 
-          type GeoIP struct {
-          	state         protoimpl.MessageState
-          	CountryCode   string  \`protobuf:"bytes,1,opt,name=country_code,json=countryCode,proto3"\`
-          	Cidr          []*CIDR \`protobuf:"bytes,2,rep,name=cidr,proto3"\`
+          // Кодируем поле Protobuf (номер поля, тип, данные)
+          func encodeField(num int, wireType int, data []byte) []byte {
+          	tag := uint32((num << 3) | wireType)
+          	res := writeVarint(tag)
+          	if wireType == 2 { // Length-delimited
+          		res = append(res, writeVarint(uint32(len(data)))...)
+          	}
+          	res = append(res, data...)
+          	return res
           }
-          func (x *GeoIP) ProtoReflect() protoreflect.Message { return nil }
-          func (x *GeoIP) String() string { return "" }
-          func (x *GeoIP) ProtoMessage() {}
-
-          type GeoIPList struct {
-          	state         protoimpl.MessageState
-          	Entry         []*GeoIP \`protobuf:"bytes,1,rep,name=entry,proto3"\`
-          }
-          func (x *GeoIPList) ProtoReflect() protoreflect.Message { return nil }
-          func (x *GeoIPList) String() string { return "" }
-          func (x *GeoIPList) ProtoMessage() {}
 
           func main() {
-          	list := &GeoIPList{}
-          	files, _ := os.ReadDir("./data")
+          	var allEntries []byte
+          	files, err := os.ReadDir("./data")
+          	if err != nil { log.Fatal(err) }
 
           	for _, f := range files {
           		if f.IsDir() { continue }
           		tag := strings.ToUpper(f.Name())
-          		log.Printf("Processing: %s", tag)
-          		
-          		geoip := &GeoIP{CountryCode: tag}
+          		fmt.Printf("Packing tag: %s\n", tag)
+
+          		var cidrsData []byte
           		file, _ := os.Open(filepath.Join("./data", f.Name()))
-          		
           		scanner := bufio.NewScanner(file)
           		for scanner.Scan() {
           			line := strings.TrimSpace(scanner.Text())
           			if line == "" || strings.HasPrefix(line, "#") { continue }
-          			
+
           			_, ipnet, err := net.ParseCIDR(line)
+          			var ip net.IP
+          			var mask int
           			if err == nil {
-          				mask, _ := ipnet.Mask.Size()
-          				geoip.Cidr = append(geoip.Cidr, &CIDR{Ip: ipnet.IP, Prefix: uint32(mask)})
-          			} else if ip := net.ParseIP(line); ip != nil {
-          				geoip.Cidr = append(geoip.Cidr, &CIDR{Ip: ip, Prefix: 32})
+          				ip = ipnet.IP.To4()
+          				if ip == nil { ip = ipnet.IP.To16() }
+          				mask, _ = ipnet.Mask.Size()
+          			} else if pip := net.ParseIP(line); pip != nil {
+          				ip = pip.To4()
+          				if ip == nil { ip = pip.To16() }
+          				mask = 32
+          				if len(ip) == 16 { mask = 128 }
+          			}
+
+          			if ip != nil {
+          				// Собираем структуру CIDR: field 1 (ip), field 2 (prefix)
+          				c := encodeField(1, 2, ip)
+          				c = append(c, encodeField(2, 0, writeVarint(uint32(mask)))...)
+          				// Добавляем в список CIDR внутри GeoIP (field 2)
+          				cidrsData = append(cidrsData, encodeField(2, 2, c)...)
           			}
           		}
           		file.Close()
-          		list.Entry = append(list.Entry, geoip)
+
+          		// Собираем структуру GeoIP: field 1 (country_code), field 2 (repeated CIDR)
+          		geoIPData := encodeField(1, 2, []byte(tag))
+          		geoIPData = append(geoIPData, cidrsData...)
+          		
+          		// Добавляем GeoIP в общий список GeoIPList (field 1)
+          		allEntries = append(allEntries, encodeField(1, 2, geoIPData)...)
           	}
 
-          	out, _ := proto.Marshal(list)
-          	os.WriteFile("geoip.dat", out, 0644)
-          	log.Println("SUCCESS: geoip.dat generated")
+          	os.WriteFile("geoip.dat", allEntries, 0644)
+          	fmt.Println("Done: geoip.dat saved.")
           }
           EOF
 
-      - name: Build and Run
-        run: |
-          go mod init geoipbuild
-          go get google.golang.org/protobuf/proto
-          go run builder.go
+      - name: Run Generator
+        run: go run builder.go
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
