@@ -1,35 +1,32 @@
-name: Build GeoIP (No RU Test)
-on: [workflow_dispatch, push]
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
-
-      - name: Build GeoIP
+- name: Build GeoIP
         run: |
-          # Устанавливаем конвертер
-          go install github.com/v2fly/v2ray-core/v5/main@latest
+          # Устанавливаем официальный упаковщик, который менее капризен к контенту
+          go install github.com/v2fly/geoip@latest
           
-          # Подготавливаем временную папку и копируем ВСЁ, кроме 'ru'
-          mkdir -p ./test_input
-          cp ./data/* ./test_input/
-          rm -f ./test_input/ru
+          # Готовим структуру
+          mkdir -p ./input
+          cp ./data/private ./input/private
+          cp ./data/telegram ./input/telegram
+          # Файл ru пока не берем, чтобы убедиться в успехе
           
-          echo "Файлы в обработке:"
-          ls ./test_input
-          
-          # Запуск конвертации
-          $(go env GOPATH)/bin/main convert proto --type=geoip --input=./test_input --output=geoip.dat
+          # Создаем минимальный конфиг, который просто "пакует" файлы
+          cat <<EOF > config.json
+          {
+            "input": [
+              {
+                "type": "text",
+                "action": "add",
+                "args": { "uri": "./input" }
+              }
+            ],
+            "output": [
+              {
+                "type": "geoip",
+                "action": "serialize",
+                "args": { "uri": "geoip.dat" }
+              }
+            ]
+          }
+          EOF
 
-      - name: Upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: geoip-test
-          path: geoip.dat
+          $(go env GOPATH)/bin/geoip -c config.json
