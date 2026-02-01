@@ -2,9 +2,7 @@ name: Build-GeoIP-Final
 on:
   workflow_dispatch:
   push:
-    branches:
-      - master
-      - main
+    branches: [master, main]
 
 jobs:
   build:
@@ -17,7 +15,6 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
-          cache: false
 
       - name: Create Generator Script
         run: |
@@ -39,14 +36,12 @@ jobs:
           func main() {
           	list := &router.GeoIPList{}
           	files, err := os.ReadDir("./data")
-          	if err != nil {
-          		log.Fatal(err)
-          	}
+          	if err != nil { log.Fatal(err) }
 
           	for _, f := range files {
           		if f.IsDir() { continue }
           		tag := strings.ToUpper(f.Name())
-          		log.Printf("Processing tag: %s", tag)
+          		log.Printf("Processing: %s", tag)
           		
           		geoip := &router.GeoIP{CountryCode: tag}
           		file, _ := os.Open(filepath.Join("./data", f.Name()))
@@ -54,9 +49,8 @@ jobs:
           		scanner := bufio.NewScanner(file)
           		for scanner.Scan() {
           			line := strings.TrimSpace(scanner.Text())
-          			if line == "" || strings.HasPrefix(line, "#") {
-          				continue
-          			}
+          			if line == "" || strings.HasPrefix(line, "#") { continue }
+          			
           			_, ipnet, err := net.ParseCIDR(line)
           			if err == nil {
           				mask, _ := ipnet.Mask.Size()
@@ -77,22 +71,22 @@ jobs:
 
           	out, _ := proto.Marshal(list)
           	os.WriteFile("geoip.dat", out, 0644)
-          	log.Println("Success: geoip.dat created")
+          	log.Println("Successfully created geoip.dat")
           }
           EOF
 
       - name: Build and Run
         run: |
           go mod init geoipbuild
-          # Берем ТОЛЬКО необходимые библиотеки типов
-          go get github.com/v2fly/v2ray-core/v5@v5.22.0
+          # Фикс: подтягиваем только те пакеты, которые реально нужны
+          go get github.com/v2fly/v2ray-core/v5/app/router@v5.22.0
           go get google.golang.org/protobuf/proto
-          # Игнорируем ошибки в зависимостях других модулей
-          go mod tidy -e || true
+          
+          # Запуск сборки (пропускаем tidy, чтобы не лезть в зависимости Hysteria)
           go run builder.go
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: my-geoip
+          name: geoip-dist
           path: geoip.dat
