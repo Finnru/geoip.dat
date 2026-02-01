@@ -1,73 +1,30 @@
-name: Build GeoIP
-on: [workflow_dispatch, push]
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      # 1. Клонируем и собираем сам инструмент (как в твоем примере)
-      - name: Checkout v2fly/geoip
-        uses: actions/checkout@v4
-        with:
-          repository: v2fly/geoip
-          path: geoip_src
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
-
-      - name: Build tool
-        working-directory: geoip_src
-        run: go build -o geoip_bin
-
-      # 2. Подготовка данных (логика очистки из твоего примера)
-      - name: Prepare Data
-        run: |
-          mkdir -p input
-          # Очистка каждого файла от комментариев (#, //, @) и пробелов
-          for f in ./data/*; do
-            tag=$(basename "$f")
-            awk '{
-              gsub(/\r/,"")
-              sub(/[ \t]*#.*/, "", $0)
-              sub(/[ \t]*\/\/.*/, "", $0)
-              sub(/[ \t]*@.*/, "", $0)
-              s=$0; sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s)
-              if (s != "") print s
-            }' "$f" > "./input/$tag"
-          done
-
-      # 3. Создание конфига, который ТОЧНО поймет собранный бинарник
+# 3. Создание конфига с актуальными именами типов
       - name: Create Config
         run: |
           cat <<EOF > config.json
           {
             "input": [
               {
-                "type": "v2ray-geoip",
+                "type": "text",
                 "action": "add",
-                "args": { "uri": "./input" }
+                "args": {
+                  "uri": "./input"
+                }
               }
             ],
             "output": [
               {
-                "type": "v2ray-geoip",
+                "type": "geoip",
                 "action": "serialize",
-                "args": { "uri": "geoip.dat" }
+                "args": {
+                  "uri": "geoip.dat"
+                }
               }
             ]
           }
           EOF
 
-      # 4. Запуск собранного бинарника
+      # 4. Запуск с принудительной очисткой памяти
       - name: Run Build
-        run: ./geoip_src/geoip_bin -c config.json
-
-      - name: Upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: geoip-file
-          path: geoip.dat
+        run: |
+          GOGC=50 ./geoip_src/geoip_bin -c config.json
