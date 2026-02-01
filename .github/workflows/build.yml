@@ -17,7 +17,7 @@ jobs:
       - name: Build
         run: |
           go install github.com/v2fly/geoip@latest
-          echo '{"input":[{"type":"v2ray-geoip","action":"add","args":{"uri":"./data"}}],"output":[{"type":"v2ray-geoip","action":"serialize","args":{"uri":"geoip.dat"}}]}' > config.json
+          echo '{"input":[{"type":"plain","action":"add","args":{"uri":"./data"}}],"output":[{"type":"plain","action":"serialize","args":{"uri":"geoip.dat"}}]}' > config.json
           $(go env GOPATH)/bin/geoip -c config.json
 
       - name: Upload
