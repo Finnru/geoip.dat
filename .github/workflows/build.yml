@@ -1,27 +1,11 @@
-name: Build GeoIP
-on:
-  workflow_dispatch:
-  push:
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
-
-      - name: Build
+- name: Build
         run: |
           go install github.com/v2fly/geoip@latest
           cat <<EOF > config.json
           {
             "input": [
               {
-                "type": "v2ray-geo-ip",
+                "type": "geoip",
                 "action": "add",
                 "args": {
                   "uri": "./data"
@@ -30,7 +14,7 @@ jobs:
             ],
             "output": [
               {
-                "type": "v2ray-geo-ip",
+                "type": "geoip",
                 "action": "serialize",
                 "args": {
                   "uri": "geoip.dat"
@@ -40,9 +24,3 @@ jobs:
           }
           EOF
           $(go env GOPATH)/bin/geoip -c config.json
-
-      - name: Upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: geoip-file
-          path: geoip.dat
