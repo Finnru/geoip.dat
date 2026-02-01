@@ -1,4 +1,4 @@
-name: Build
+name: Build GeoIP
 on:
   workflow_dispatch:
   push:
@@ -12,13 +12,9 @@ jobs:
         with:
           go-version: '1.24'
       - run: |
-          go install github.com/v2fly/domain-list-community@latest
           go install github.com/v2fly/geoip@latest
-          $(go env GOPATH)/bin/domain-list-community --datapath=./data --outputdir=./ --outputname=geosite.dat
           $(go env GOPATH)/bin/geoip --datapath=./data --outputdir=./ --outputname=geoip.dat
       - uses: actions/upload-artifact@v4
         with:
-          name: geodata
-          path: |
-            geosite.dat
-            geoip.dat
+          name: geoip-file
+          path: geoip.dat
