@@ -1,30 +1,35 @@
-# 3. Создание конфига с актуальными именами типов
-      - name: Create Config
-        run: |
-          cat <<EOF > config.json
-          {
-            "input": [
-              {
-                "type": "text",
-                "action": "add",
-                "args": {
-                  "uri": "./input"
-                }
-              }
-            ],
-            "output": [
-              {
-                "type": "geoip",
-                "action": "serialize",
-                "args": {
-                  "uri": "geoip.dat"
-                }
-              }
-            ]
-          }
-          EOF
+name: Build GeoIP (No RU Test)
+on: [workflow_dispatch, push]
 
-      # 4. Запуск с принудительной очисткой памяти
-      - name: Run Build
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Build GeoIP
         run: |
-          GOGC=50 ./geoip_src/geoip_bin -c config.json
+          # Устанавливаем конвертер
+          go install github.com/v2fly/v2ray-core/v5/main@latest
+          
+          # Подготавливаем временную папку и копируем ВСЁ, кроме 'ru'
+          mkdir -p ./test_input
+          cp ./data/* ./test_input/
+          rm -f ./test_input/ru
+          
+          echo "Файлы в обработке:"
+          ls ./test_input
+          
+          # Запуск конвертации
+          $(go env GOPATH)/bin/main convert proto --type=geoip --input=./test_input --output=geoip.dat
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: geoip-test
+          path: geoip.dat
