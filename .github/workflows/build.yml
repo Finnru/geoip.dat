@@ -6,7 +6,7 @@ on:
       - main
       - master
     paths:
-      - 'ip-data/**'
+      - 'data/**'
 
 jobs:
   build:
@@ -25,7 +25,7 @@ jobs:
         run: |
           go install github.com/v2fly/geoip@latest
           # Генератор ищет файлы в указанной директории и собирает их в dat файл
-          $(go env GOPATH)/bin/geoip --datapath=./ip-data --outputdir=./ --outputname=geoip.dat
+          $(go env GOPATH)/bin/geoip --datapath=./data --outputdir=./ --outputname=geoip.dat
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
