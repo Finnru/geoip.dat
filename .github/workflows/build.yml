@@ -13,49 +13,22 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
-          cache: false
 
       - name: Build GeoIP
         run: |
-          # 1. Устанавливаем генератор
-          go install github.com/v2fly/geoip@latest
+          # 1. Устанавливаем самый простой и надежный генератор
+          go install github.com/loyalsoldier/geoip-gen@latest
           
-          # 2. Подготовка папки
-          mkdir -p ./cleaned_data
-          
-          # 3. Глубокая очистка и сортировка данных
+          # 2. Подготовка данных: чистим от мусора и дублей
+          mkdir -p ./input
           for file in ./data/*; do
             tag=$(basename "$file")
-            # Вытаскиваем только валидные IP, сортируем и оставляем уникальные
-            grep -oE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(/[0-9]{1,2})?' "$file" | sort -u > "./cleaned_data/$tag" || true
+            grep -oE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(/[0-9]{1,2})?' "$file" | sort -u > "./input/$tag" || true
           done
 
-          # 4. Создаем конфиг (используем проверенный формат)
-          cat <<EOF > config.json
-          {
-            "input": [
-              {
-                "type": "v2ray-geoip",
-                "action": "add",
-                "args": {
-                  "uri": "./cleaned_data"
-                }
-              }
-            ],
-            "output": [
-              {
-                "type": "v2ray-geoip",
-                "action": "serialize",
-                "args": {
-                  "uri": "geoip.dat"
-                }
-              }
-            ]
-          }
-          EOF
-
-          # 5. Запуск сборки
-          $(go env GOPATH)/bin/geoip -c config.json
+          # 3. Генерируем файл. Флаг -input указывает на папку, -output на имя файла.
+          # Больше никаких JSON конфигов!
+          $(go env GOPATH)/bin/geoip-gen -input ./input -output geoip.dat
 
       - name: Upload
         uses: actions/upload-artifact@v4
