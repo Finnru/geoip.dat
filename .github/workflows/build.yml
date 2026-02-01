@@ -1,10 +1,12 @@
-name: Build Geoip
+name: Build GeoIP
 on:
   workflow_dispatch:
   push:
     branches:
       - main
       - master
+    paths:
+      - 'ip-data/**'
 
 jobs:
   build:
@@ -16,13 +18,14 @@ jobs:
       - name: Setup Go environment
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24' # Обновили до версии, которую просит генератор
+          go-version: '1.24'
           cache: false
 
-      - name: Install and Build
+      - name: Install and Build GeoIP
         run: |
-          go install github.com/v2fly/domain-list-community@latest
-          $(go env GOPATH)/bin/domain-list-community --datapath=./data --outputdir=./ --outputname=geoip.dat
+          go install github.com/v2fly/geoip@latest
+          # Генератор ищет файлы в указанной директории и собирает их в dat файл
+          $(go env GOPATH)/bin/geoip --datapath=./ip-data --outputdir=./ --outputname=geoip.dat
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
