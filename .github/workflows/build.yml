@@ -1,34 +1,7 @@
-name: Build GeoIP
-on:
-  workflow_dispatch:
-  push:
-    branches:
-      - main
-      - master
-    paths:
-      - 'data/**'
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Go environment
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
-          cache: false
-
-      - name: Install and Build GeoIP
+- name: Install and Build GeoIP
         run: |
+          # 1. Устанавливаем именно генератор GeoIP
           go install github.com/v2fly/geoip@latest
-          # Генератор ищет файлы в указанной директории и собирает их в dat файл
+          
+          # 2. Запускаем именно его
           $(go env GOPATH)/bin/geoip --datapath=./data --outputdir=./ --outputname=geoip.dat
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: geoip-file
-          path: geoip.dat
