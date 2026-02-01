@@ -1,5 +1,5 @@
 - name: Install and Build GeoIP
-        run: |
+        run:
           go install github.com/v2fly/geoip@latest
           
           # Создаем файл конфигурации config.json прямо в процессе сборки
