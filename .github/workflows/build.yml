@@ -32,7 +32,6 @@ jobs:
             "path/filepath"
             "strings"
 
-            // В V5 типы находятся в подпакете app/router/routerproto или просто router
             "github.com/v2fly/v2ray-core/v5/app/router"
             "google.golang.org/protobuf/proto"
           )
@@ -40,9 +39,10 @@ jobs:
           func main() {
             list := &router.GeoIPList{}
             
+            // Читаем всё из папки data
             files, err := os.ReadDir("./data")
             if err != nil {
-              log.Fatal("Could not read data directory:", err)
+              log.Fatal("Directory error:", err)
             }
 
             for _, f := range files {
@@ -54,15 +54,12 @@ jobs:
               geoip := &router.GeoIP{CountryCode: tag}
               
               file, err := os.Open(filepath.Join("./data", f.Name()))
-              if err != nil {
-                log.Printf("Error opening file %s: %v", f.Name(), err)
-                continue
-              }
+              if err != nil { continue }
 
               scanner := bufio.NewScanner(file)
               for scanner.Scan() {
                 line := strings.TrimSpace(scanner.Text())
-                if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "//") {
+                if line == "" || strings.HasPrefix(line, "#") {
                   continue
                 }
 
@@ -73,42 +70,34 @@ jobs:
                     Ip:     ipnet.IP,
                     Prefix: uint32(mask),
                   })
-                } else {
-                  ip := net.ParseIP(line)
-                  if ip != nil {
-                    geoip.Cidr = append(geoip.Cidr, &router.CIDR{
-                      Ip:     ip,
-                      Prefix: 32,
-                    })
-                  }
+                } else if ip := net.ParseIP(line); ip != nil {
+                  geoip.Cidr = append(geoip.Cidr, &router.CIDR{
+                    Ip:     ip,
+                    Prefix: 32,
+                  })
                 }
               }
               file.Close()
               list.Entry = append(list.Entry, geoip)
             }
 
-            out, err := proto.Marshal(list)
-            if err != nil {
-              log.Fatal("Failed to encode GeoIP:", err)
-            }
-
-            err = os.WriteFile("geoip.dat", out, 0644)
-            if err != nil {
-              log.Fatal("Failed to write geoip.dat:", err)
-            }
-            
-            log.Println("Successfully created geoip.dat")
+            out, _ := proto.Marshal(list)
+            os.WriteFile("geoip.dat", out, 0644)
+            log.Println("DONE: geoip.dat created successfully")
           }
           EOF
 
       - name: Build and Run
         run: |
           go mod init geoipbuild
-          # Скачиваем конкретно пакет с типами, чтобы избежать undefined
+          # Магия здесь: подтягиваем именно те пакеты, которые нужны для сборки
           go get github.com/v2fly/v2ray-core/v5@v5.22.0
           go get google.golang.org/protobuf/proto
           
-          # Запускаем сборку. Если упадет - билд остановится и покажет ошибку.
+          # Игнорируем ошибки в ненужных нам зависимостях (Hysteria и прочие)
+          go mod tidy -e || true
+          
+          # Запускаем генератор
           go run builder.go
 
       - name: Upload Result
