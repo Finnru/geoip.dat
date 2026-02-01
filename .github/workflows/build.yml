@@ -2,9 +2,7 @@ name: Build-GeoIP-Final
 on:
   workflow_dispatch:
   push:
-    branches:
-      - master
-      - main
+    branches: [master, main]
 
 jobs:
   build:
@@ -23,6 +21,7 @@ jobs:
         run: |
           cat <<EOF > builder.go
           package main
+
           import (
             "bufio"
             "log"
@@ -30,56 +29,77 @@ jobs:
             "os"
             "path/filepath"
             "strings"
+
             "github.com/v2fly/v2ray-core/v5/app/router"
             "google.golang.org/protobuf/proto"
           )
+
           func main() {
+            // В V5 структуры лежат прямо в пакете router
             list := &router.GeoIPList{}
+            
             files, err := os.ReadDir("./data")
-            if err != nil { log.Fatal(err) }
+            if err != nil {
+              log.Fatal(err)
+            }
+
             for _, f := range files {
               if f.IsDir() { continue }
               tag := strings.ToUpper(f.Name())
-              log.Printf("Processing: %s", tag)
+              log.Printf("Processing tag: %s", tag)
+              
               geoip := &router.GeoIP{CountryCode: tag}
-              file, _ := os.Open(filepath.Join("./data", f.Name()))
+              
+              file, err := os.Open(filepath.Join("./data", f.Name()))
+              if err != nil { continue }
+
               scanner := bufio.NewScanner(file)
               for scanner.Scan() {
                 line := strings.TrimSpace(scanner.Text())
                 if line == "" || strings.HasPrefix(line, "#") { continue }
+
                 _, ipnet, err := net.ParseCIDR(line)
                 if err == nil {
                   mask, _ := ipnet.Mask.Size()
-                  geoip.Cidr = append(geoip.Cidr, &router.CIDR{Ip: ipnet.IP, Prefix: uint32(mask)})
+                  geoip.Cidr = append(geoip.Cidr, &router.CIDR{
+                    Ip:     ipnet.IP,
+                    Prefix: uint32(mask),
+                  })
                 } else if ip := net.ParseIP(line); ip != nil {
-                  geoip.Cidr = append(geoip.Cidr, &router.CIDR{Ip: ip, Prefix: 32})
+                  geoip.Cidr = append(geoip.Cidr, &router.CIDR{
+                    Ip:     ip,
+                    Prefix: 32,
+                  })
                 }
               }
               file.Close()
               list.Entry = append(list.Entry, geoip)
             }
-            out, _ := proto.Marshal(list)
-            os.WriteFile("geoip.dat", out, 0644)
-            log.Println("Success: geoip.dat created")
+
+            out, err := proto.Marshal(list)
+            if err != nil { log.Fatal(err) }
+
+            if err := os.WriteFile("geoip.dat", out, 0644); err != nil {
+              log.Fatal(err)
+            }
+            log.Println("Done! geoip.dat created.")
           }
           EOF
 
       - name: Build and Run
         run: |
-          # 1. Инициализируем модуль
           go mod init geoipbuild
-          
-          # 2. Скачиваем только необходимые типы (минимальный набор)
-          go get google.golang.org/protobuf/proto
+          # Принудительно ставим версию, где пути к пакетам стабильны
           go get github.com/v2fly/v2ray-core/v5@v5.22.0
+          go get google.golang.org/protobuf/proto
           
-          # 3. Принудительно чистим зависимости от мусора, который ломает билд
+          # Убираем проверку битых модулей, которые нам не нужны для компиляции
           go mod tidy -e
           
-          # 4. Запускаем генерацию
+          # Запуск сборки
           go run builder.go
 
-      - name: Upload Artifact
+      - name: Upload Result
         uses: actions/upload-artifact@v4
         with:
           name: geoip-artifact
