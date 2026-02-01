@@ -2,9 +2,7 @@ name: Build-GeoIP-Final
 on:
   workflow_dispatch:
   push:
-    branches:
-      - master
-      - main
+    branches: [master, main]
 
 jobs:
   build:
@@ -17,10 +15,13 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
-          cache: false
 
       - name: Create Generator Script
         run: |
+          # Скачиваем ТОЛЬКО определения структур, чтобы не зависеть от тяжелого ядра
+          mkdir -p proto/router
+          curl -sSL https://raw.githubusercontent.com/v2fly/v2ray-core/master/app/router/config.proto > proto/router/config.proto
+          
           cat <<EOF > builder.go
           package main
 
@@ -38,41 +39,32 @@ jobs:
 
           func main() {
             list := &router.GeoIPList{}
-            
-            // Читаем всё из папки data
             files, err := os.ReadDir("./data")
-            if err != nil {
-              log.Fatal("Directory error:", err)
-            }
+            if err != nil { log.Fatal(err) }
 
             for _, f := range files {
               if f.IsDir() { continue }
-              
               tag := strings.ToUpper(f.Name())
               log.Printf("Processing tag: %s", tag)
               
               geoip := &router.GeoIP{CountryCode: tag}
+              file, _ := os.Open(filepath.Join("./data", f.Name()))
               
-              file, err := os.Open(filepath.Join("./data", f.Name()))
-              if err != nil { continue }
-
               scanner := bufio.NewScanner(file)
               for scanner.Scan() {
                 line := strings.TrimSpace(scanner.Text())
-                if line == "" || strings.HasPrefix(line, "#") {
-                  continue
-                }
-
+                if line == "" || strings.HasPrefix(line, "#") { continue }
+                
                 _, ipnet, err := net.ParseCIDR(line)
                 if err == nil {
                   mask, _ := ipnet.Mask.Size()
                   geoip.Cidr = append(geoip.Cidr, &router.CIDR{
-                    Ip:     ipnet.IP,
+                    Ip: ipnet.IP, 
                     Prefix: uint32(mask),
                   })
                 } else if ip := net.ParseIP(line); ip != nil {
                   geoip.Cidr = append(geoip.Cidr, &router.CIDR{
-                    Ip:     ip,
+                    Ip: ip, 
                     Prefix: 32,
                   })
                 }
@@ -83,21 +75,18 @@ jobs:
 
             out, _ := proto.Marshal(list)
             os.WriteFile("geoip.dat", out, 0644)
-            log.Println("DONE: geoip.dat created successfully")
+            log.Println("DONE: geoip.dat created")
           }
           EOF
 
       - name: Build and Run
         run: |
           go mod init geoipbuild
-          # Магия здесь: подтягиваем именно те пакеты, которые нужны для сборки
+          # Подтягиваем только типы и protobuf
           go get github.com/v2fly/v2ray-core/v5@v5.22.0
           go get google.golang.org/protobuf/proto
           
-          # Игнорируем ошибки в ненужных нам зависимостях (Hysteria и прочие)
-          go mod tidy -e || true
-          
-          # Запускаем генератор
+          # Запуск без полной проверки модулей (чтобы не упасть на Hysteria)
           go run builder.go
 
       - name: Upload Result
