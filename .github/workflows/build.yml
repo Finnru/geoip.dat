@@ -1,8 +1,10 @@
-name: Build-GeoIP-Safe
+name: Build-GeoIP-Final
 on:
   workflow_dispatch:
   push:
-    branches: [master, main]
+    branches:
+      - master
+      - main
 
 jobs:
   build:
@@ -15,8 +17,9 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
+          cache: false
 
-      - name: Create Generator
+      - name: Create Generator Script
         run: |
           cat <<EOF > builder.go
           package main
@@ -27,7 +30,6 @@ jobs:
             "os"
             "path/filepath"
             "strings"
-            // Используем только библиотеку типов без тяжелого ядра
             "github.com/v2fly/v2ray-core/v5/app/router"
             "google.golang.org/protobuf/proto"
           )
@@ -58,22 +60,27 @@ jobs:
             }
             out, _ := proto.Marshal(list)
             os.WriteFile("geoip.dat", out, 0644)
-            log.Println("Done!")
+            log.Println("Success: geoip.dat created")
           }
           EOF
 
-      - name: Build
+      - name: Build and Run
         run: |
+          # 1. Инициализируем модуль
           go mod init geoipbuild
-          # Заменяем тяжелое ядро на легкие интерфейсы
-          go get github.com/v2fly/v2ray-core/v5@v5.22.0
+          
+          # 2. Скачиваем только необходимые типы (минимальный набор)
           go get google.golang.org/protobuf/proto
-          # Игнорируем ошибки в зависимостях, которые нам не нужны
-          go mod tidy || true 
+          go get github.com/v2fly/v2ray-core/v5@v5.22.0
+          
+          # 3. Принудительно чистим зависимости от мусора, который ломает билд
+          go mod tidy -e
+          
+          # 4. Запускаем генерацию
           go run builder.go
 
-      - name: Upload
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: geoip-dist
+          name: geoip-artifact
           path: geoip.dat
