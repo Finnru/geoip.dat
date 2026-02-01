@@ -1,29 +1,11 @@
-name: Build GeoIP
-on: [workflow_dispatch, push]
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
-          cache: false
-
-      - name: Build GeoIP
+- name: Build GeoIP
         run: |
-          # 1. Устанавливаем правильный инструмент
           go install github.com/v2fly/geoip@latest
           
-          # 2. Подготовка папки (берем ВСЕ файлы, включая ru и private)
           mkdir -p ./input
           cp ./data/* ./input/
 
-          # 3. Создаем конфиг. Тип "text" для входа и "geoip" для выхода.
-          # Это стандартная схема для v2fly/geoip.
+          # Исправленный конфиг: используем inputDir вместо uri внутри args
           cat <<EOF > config.json
           {
             "input": [
@@ -31,13 +13,13 @@ jobs:
                 "type": "text",
                 "action": "add",
                 "args": {
-                  "uri": "./input"
+                  "inputDir": "./input"
                 }
               }
             ],
             "output": [
               {
-                "type": "geoip",
+                "type": "v2ray-geoip",
                 "action": "serialize",
                 "args": {
                   "uri": "geoip.dat"
@@ -47,11 +29,4 @@ jobs:
           }
           EOF
 
-          # 4. Запуск сборки
           $(go env GOPATH)/bin/geoip -c config.json
-
-      - name: Upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: geoip-file
-          path: geoip.dat
