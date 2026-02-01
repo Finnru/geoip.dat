@@ -23,7 +23,6 @@ jobs:
         run: |
           cat <<EOF > builder.go
           package main
-
           import (
             "bufio"
             "log"
@@ -31,44 +30,31 @@ jobs:
             "os"
             "path/filepath"
             "strings"
-
             "github.com/v2fly/v2ray-core/v5/app/router"
             "google.golang.org/protobuf/proto"
           )
-
           func main() {
             list := &router.GeoIPList{}
-            
-            // Читаем все файлы из папки data
             files, err := os.ReadDir("./data")
             if err != nil {
               log.Fatal("Could not read data directory:", err)
             }
-
             for _, f := range files {
               if f.IsDir() { continue }
-              
-              // Имя файла без расширения станет тегом (например, RU, TELEGRAM)
               tag := strings.ToUpper(f.Name())
               log.Printf("Processing tag: %s", tag)
-              
               geoip := &router.GeoIP{CountryCode: tag}
-              
               file, err := os.Open(filepath.Join("./data", f.Name()))
               if err != nil {
                 log.Printf("Error opening file %s: %v", f.Name(), err)
                 continue
               }
-
               scanner := bufio.NewScanner(file)
               for scanner.Scan() {
                 line := strings.TrimSpace(scanner.Text())
-                // Пропускаем пустые строки и комментарии
                 if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "//") {
                   continue
                 }
-
-                // Парсим CIDR
                 _, ipnet, err := net.ParseCIDR(line)
                 if err == nil {
                   mask, _ := ipnet.Mask.Size()
@@ -77,7 +63,6 @@ jobs:
                     Prefix: uint32(mask),
                   })
                 } else {
-                  // Попытка спарсить одиночный IP как /32
                   ip := net.ParseIP(line)
                   if ip != nil {
                     geoip.Cidr = append(geoip.Cidr, &router.CIDR{
@@ -90,40 +75,28 @@ jobs:
               file.Close()
               list.Entry = append(list.Entry, geoip)
             }
-
-            // Сериализация в Protobuf
             out, err := proto.Marshal(list)
             if err != nil {
               log.Fatal("Failed to encode GeoIP:", err)
             }
-
-            // Запись готового файла
             err = os.WriteFile("geoip.dat", out, 0644)
             if err != nil {
               log.Fatal("Failed to write geoip.dat:", err)
             }
-            
             log.Println("Successfully created geoip.dat with", len(list.Entry), "tags")
           }
           EOF
 
       - name: Build and Run
         run: |
-          # Инициализируем модуль
           go mod init geoipbuild
-          
-          # Устанавливаем зависимости
           go get github.com/v2fly/v2ray-core/v5@v5.22.0
           go get google.golang.org/protobuf/proto
-          
-          # Ключевой момент: скачиваем все транзитивные зависимости (idna, netipx и т.д.)
           go mod tidy
-          
-          # Запускаем генератор
           go run builder.go
 
-      - name: Upload Result
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: geoip-artifact
+          name: my-geoip-file
           path: geoip.dat
