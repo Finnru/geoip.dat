@@ -17,7 +17,8 @@ jobs:
       - name: Build
         run: |
           go install github.com/v2fly/geoip@latest
-          echo '{"input":[{"type":"plain","action":"add","args":{"uri":"./data"}}],"output":[{"type":"plain","action":"serialize","args":{"uri":"geoip.dat"}}]}' > config.json
+          # Пробуем тип "text", который используется для текстовых списков CIDR
+          echo '{"input":[{"type":"text","action":"add","args":{"uri":"./data"}}],"output":[{"type":"text","action":"serialize","args":{"uri":"geoip.dat"}}]}' > config.json
           $(go env GOPATH)/bin/geoip -c config.json
 
       - name: Upload
