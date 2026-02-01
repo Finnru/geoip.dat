@@ -1,20 +1,30 @@
-name: Build GeoIP
-on:
-  workflow_dispatch:
-  push:
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
-      - run: |
+- name: Install and Build GeoIP
+        run: |
           go install github.com/v2fly/geoip@latest
-          $(go env GOPATH)/bin/geoip --datapath=./data --outputdir=./ --outputname=geoip.dat
-      - uses: actions/upload-artifact@v4
-        with:
-          name: geoip-file
-          path: geoip.dat
+          
+          # Создаем файл конфигурации config.json прямо в процессе сборки
+          cat <<EOF > config.json
+          {
+            "input": [
+              {
+                "type": "v2ray-geo-ip",
+                "action": "add",
+                "args": {
+                  "uri": "./data"
+                }
+              }
+            ],
+            "output": [
+              {
+                "type": "v2ray-geo-ip",
+                "action": "serialize",
+                "args": {
+                  "uri": "geoip.dat"
+                }
+              }
+            ]
+          }
+          EOF
+          
+          # Запускаем сборку (теперь без лишних флагов, он сам подхватит config.json)
+          $(go env GOPATH)/bin/geoip
