@@ -1,26 +1,27 @@
-- name: Build
+name: Build GeoIP
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Build
         run: |
           go install github.com/v2fly/geoip@latest
-          cat <<EOF > config.json
-          {
-            "input": [
-              {
-                "type": "geoip",
-                "action": "add",
-                "args": {
-                  "uri": "./data"
-                }
-              }
-            ],
-            "output": [
-              {
-                "type": "geoip",
-                "action": "serialize",
-                "args": {
-                  "uri": "geoip.dat"
-                }
-              }
-            ]
-          }
-          EOF
+          echo '{"input":[{"type":"geoip","action":"add","args":{"uri":"./data"}}],"output":[{"type":"geoip","action":"serialize","args":{"uri":"geoip.dat"}}]}' > config.json
           $(go env GOPATH)/bin/geoip -c config.json
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: geoip-file
+          path: geoip.dat
