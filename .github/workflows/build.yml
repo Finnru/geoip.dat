@@ -1,37 +1,328 @@
-name: Build GeoIP
+name: Build geoip
 on:
   workflow_dispatch:
   push:
+    branches:
+      - test
+      - master
+    paths-ignore:
+      - "README.md"
+      - ".gitignore"
+      - "LICENSE"
+
+permissions:
+  contents: write
 
 jobs:
   build:
+    name: Build
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - name: Checkout codebase
+        uses: actions/checkout@v6
         with:
-          go-version: '1.24'
+          fetch-depth: 1
 
-      - name: Build GeoIP
+      - name: Checkout v2fly/geoip
+        uses: actions/checkout@v6
+        with:
+          repository: v2fly/geoip
+          path: geoip
+          fetch-depth: 1
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: geoip/go.mod
+          cache: true
+          cache-dependency-path: geoip/go.sum
+
+
+      - name: Overlay custom files over geoip
         run: |
-          # 1. Устанавливаем самый простой и надежный генератор
-          go install github.com/loyalsoldier/geoip-gen@latest
+          set -euo pipefail
+          cp -f ./*.json geoip/ 2>/dev/null || true
+          cp -f ./*.txt  geoip/ 2>/dev/null || true
+          cp -f ./*.py   geoip/ 2>/dev/null || true
+
+      - name: Set tag
+        if: github.ref_name == 'master'
+        run: |
+          set -euo pipefail
+          DAILY_TAG=$(date +%Y%m%d%H%M)
+          echo "DAILY_TAG=$DAILY_TAG" >> "$GITHUB_ENV"
+
+      - name: Create Tag
+        if: github.ref_name == 'master'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { DAILY_TAG } = process.env
+            await github.rest.git.createRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: `refs/tags/${DAILY_TAG}`,
+              sha: context.sha
+            })
+
+      - name: Download inputs (IP lists + Geobases)
+        working-directory: geoip
+        run: |
+          set -euo pipefail
+          CURL="curl -fsSL --retry 3 --retry-delay 2 --retry-connrefused"
+
+          $CURL -o refilterbeta.txt https://raw.githubusercontent.com/1andrevich/Re-filter-lists/refs/heads/beta/ipsum.lst
+          $CURL -o antifilterdownloadcommunity.txt https://community.antifilter.download/list/community.lst
+          $CURL -o refilter.txt https://raw.githubusercontent.com/1andrevich/Re-filter-lists/refs/heads/main/ipsum.lst
+          $CURL -o refiltercommunity.txt https://raw.githubusercontent.com/1andrevich/Re-filter-lists/refs/heads/main/community_ips.lst
+          $CURL -o antifilternetwork.txt https://antifilter.network/download/ip.lst
+          $CURL -o antifilternetworkcommunity.txt https://antifilter.network/downloads/custom.lst
+          $CURL -o cdn.lst https://raw.githubusercontent.com/mansourjabin/cdn-ip-database/refs/heads/main/data/cdn.lst
+          $CURL -o merged.sum https://raw.githubusercontent.com/PentiumB/CDN-RuleSet/refs/heads/main/release/merged.sum
           
-          # 2. Подготовка данных: чистим от мусора и дублей
-          mkdir -p ./input
-          for file in ./data/*; do
-            tag=$(basename "$file")
-            grep -oE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(/[0-9]{1,2})?' "$file" | sort -u > "./input/$tag" || true
+          $CURL -o geolite_ru.lst https://raw.githubusercontent.com/hydraponique/countrydb/refs/heads/main/output/geolite2-geo-whois-asn-country-ipv4/ru.lst
+          $CURL -o geolite_by.lst https://raw.githubusercontent.com/hydraponique/countrydb/refs/heads/main/output/geolite2-geo-whois-asn-country-ipv4/by.lst
+          $CURL -o ipinfo_ru.lst https://raw.githubusercontent.com/Davoyan/ipinfo/refs/heads/main/geo/geoip/ru.lst
+          $CURL -o ipinfo_by.lst https://raw.githubusercontent.com/Davoyan/ipinfo/refs/heads/main/geo/geoip/by.lst
+          $CURL -o dbip_ru.lst https://raw.githubusercontent.com/hydraponique/countrydb/refs/heads/main/output/dbip-country-ipv4/ru.lst
+          $CURL -o dbip_by.lst https://raw.githubusercontent.com/hydraponique/countrydb/refs/heads/main/output/dbip-country-ipv4/by.lst
+
+      - name: Build geoip tool
+        working-directory: geoip
+        run: |
+          set -euo pipefail
+          go mod download
+          go build -o geoip
+
+      - name: Generate geoip artifacts
+        working-directory: geoip
+        run: |
+          set -euo pipefail
+
+          rm -rf tmp output
+          mkdir -p tmp/text output/dat output/text
+
+          rm -f ./tmp/text/prepare.txt
+          : > ./tmp/text/prepare.txt
+          for f in ./geolite_ru.lst ./geolite_by.lst ./ipinfo_ru.lst ./ipinfo_by.lst ./dbip_ru.lst ./dbip_by.lst ./CUSTOM-LIST-ADD.txt; do
+            if [ -f "$f" ]; then
+              cat "$f" >> ./tmp/text/prepare.txt
+              printf '\n' >> ./tmp/text/prepare.txt
+            fi
           done
 
-          # 3. Генерируем файл. Флаг -input указывает на папку, -output на имя файла.
-          # Больше никаких JSON конфигов!
-          $(go env GOPATH)/bin/geoip-gen -input ./input -output geoip.dat
+          python3 ipset_ops.py --mode diff \
+            --A ./tmp/text/prepare.txt \
+            --B ./refilterbeta.txt,./refilter.txt,./antifilternetwork.txt,./antifilterdownloadcommunity.txt,./refiltercommunity.txt,./antifilternetworkcommunity.txt,./cdn.lst,./merged.sum,./CUSTOM-LIST-DEL.txt \
+            --out ./tmp/text/final.txt
 
-      - name: Upload
-        uses: actions/upload-artifact@v4
+          ./geoip -c config.json
+
+          ls -l output/dat/*.dat
+
+      - name: Install Mihomo (latest stable .deb)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release download -R MetaCubeX/mihomo --pattern 'mihomo-linux-amd64*.deb' --dir /tmp
+          sudo apt-get install -y "$(ls -1 /tmp/mihomo-linux-amd64*.deb | head -n1)"
+          rm -f /tmp/mihomo-linux-amd64*.deb
+
+      - name: Install sing-box
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          curl -fsSL https://sing-box.app/install.sh | sudo -E sh -s -- --version 1.12.12
+
+      - name: Prepare workdir (copy ALL text files + clean with awk)
+        run: |
+          set -euo pipefail
+
+          work=/tmp/geoip-text
+          rm -rf "$work"
+          mkdir -p "$work"
+
+          shopt -s nullglob
+          cp -f geoip/output/text/*.txt "$work"/
+          shopt -u nullglob
+
+          for f in "$work"/*.txt; do
+            tmp="$(mktemp)"
+            awk '
+              function trim(s){ sub(/^[ \t]+/,"",s); sub(/[ \t]+$/,"",s); return s }
+              {
+                gsub(/\r/,"")
+                s=$0
+
+                sub(/[ \t]*#.*/,  "", s)
+                sub(/[ \t]*\/\/.*/, "", s)
+                sub(/[ \t]*@.*/,  "", s)
+
+                s=trim(s)
+                if (s=="") next
+                print s
+              }
+            ' "$f" > "$tmp"
+            mv "$tmp" "$f"
+          done
+
+      - name: Build mihomo .mrs from workdir (multi-file)
+        run: |
+          set -euo pipefail
+
+          src=/tmp/geoip-text
+          out=/tmp/mihomo/rulesets
+          rm -rf /tmp/mihomo
+          mkdir -p "$out"
+
+          shopt -s nullglob
+          for f in "$src"/*.txt; do
+            bn="$(basename "$f")"
+            base="${bn%.txt}"
+            dest="$out/${base}.mrs"
+            mihomo convert-ruleset ipcidr text "$f" "$dest"
+          done
+          shopt -u nullglob
+
+          ls -l "$out"/*.mrs
+
+      - name: Build sing-box .srs from workdir (multi-file, no python/jq)
+        run: |
+          set -euo pipefail
+
+          src=/tmp/geoip-text
+          out=/tmp/sing-box/rulesets
+          rm -rf /tmp/sing-box
+          mkdir -p "$out"
+
+          shopt -s nullglob
+          for f in "$src"/*.txt; do
+            bn="$(basename "$f")"
+            base="${bn%.txt}"
+            dest="$out/${base}.srs"
+
+            tmp_json="$(mktemp)"
+
+            if test -s "$f"; then
+              awk '
+                BEGIN { first=1; printf("{\"version\":3,\"rules\":[{\"ip_cidr\":[") }
+                {
+                  if (first==0) printf(",")
+                  printf("\"%s\"", $0)
+                  first=0
+                }
+                END { printf("]}]}]}") }
+              ' "$f" > "$tmp_json"
+            else
+              printf '{"version":3,"rules":[]}' > "$tmp_json"
+            fi
+
+            sing-box rule-set compile --output "$dest" "$tmp_json"
+            rm -f "$tmp_json"
+          done
+          shopt -u nullglob
+
+          ls -l "$out"/*.srs
+
+      - name: Move files to publish directory (test-release layout)
+        if: github.ref_name != 'master'
+        run: |
+          set -euo pipefail
+          rm -rf publish
+          mkdir -p publish/text publish/mihomo publish/sing-box
+
+          cp geoip/output/dat/*.dat publish/
+          cp -f /tmp/geoip-text/*.txt publish/text/
+          cp -a /tmp/mihomo/rulesets/.   publish/mihomo/
+          cp -a /tmp/sing-box/rulesets/. publish/sing-box/
+
+      - name: Push artifacts to test-release branch
+        if: github.ref_name != 'master'
+        env:
+          BRANCH: test-release
+        run: |
+          set -euo pipefail
+
+          stash=/tmp/test-release-artifacts
+          rm -rf "$stash"
+          mkdir -p "$stash"
+          cp -a publish/. "$stash"/
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git reset --hard
+          git clean -fdx
+
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null; then
+            git fetch --depth=1 origin "$BRANCH"
+            git switch -C "$BRANCH" "origin/$BRANCH"
+          else
+            git switch --orphan "$BRANCH"
+          fi
+
+          find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+          cp -a "$stash"/. .
+
+          git add -A
+          git commit -m "Publish $(date -u +%Y%m%d%H%M)" --allow-empty
+          git push origin HEAD:"$BRANCH"
+
+      - name: Move files to publish directory (release branch layout + build archives for GH Release)
+        if: github.ref_name == 'master'
+        run: |
+          set -euo pipefail
+          rm -rf publish
+          mkdir -p publish/text publish/mihomo publish/sing-box
+
+          cp geoip/output/dat/*.dat publish/
+          cp -f /tmp/geoip-text/*.txt publish/text/
+          cp -a /tmp/mihomo/rulesets/.   publish/mihomo/
+          cp -a /tmp/sing-box/rulesets/. publish/sing-box/
+          rm -f /tmp/text.tar.gz /tmp/mihomo.tar.gz /tmp/sing-box.tar.gz
+          tar -czf /tmp/text.tar.gz     -C publish text
+          tar -czf /tmp/mihomo.tar.gz   -C publish mihomo
+          tar -czf /tmp/sing-box.tar.gz -C publish sing-box
+          test -s /tmp/text.tar.gz
+          test -s /tmp/mihomo.tar.gz
+          test -s /tmp/sing-box.tar.gz
+
+      - name: Git push assets to "release" branch
+        if: github.ref_name == 'master'
+        run: |
+          cd publish || exit 1
+          git init
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b release
+          git add -A
+          git commit -m "${{ env.DAILY_TAG }}"
+          git remote add origin "https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
+          git push -f -u origin release
+
+      - name: Purge jsdelivr CDN (including nested files)
+        if: github.ref_name == 'master'
+        run: |
+          set -euo pipefail
+          cd publish || exit 1
+          find . -type f -print0 | while IFS= read -r -d '' f; do
+            rel="${f#./}"
+            curl -i "https://purge.jsdelivr.net/gh/${{ github.repository }}@release/${rel}"
+          done
+
+      - name: Publish release
+        if: github.ref_name == 'master'
+        uses: softprops/action-gh-release@v1
         with:
-          name: geoip-file
-          path: geoip.dat
+          tag_name: ${{ env.DAILY_TAG }}
+          name: ${{ env.DAILY_TAG }}
+          prerelease: false
+          draft: false
+          files: |
+            publish/*.dat
+            /tmp/mihomo.tar.gz
+            /tmp/sing-box.tar.gz
+            /tmp/text.tar.gz
