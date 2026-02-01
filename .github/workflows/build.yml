@@ -1,19 +1,38 @@
-- name: Build GeoIP
+name: Build-GeoIP
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: false
+
+      - name: Generate GeoIP
         run: |
+          # 1. Устанавливаем инструмент
           go install github.com/v2fly/geoip@latest
           
+          # 2. Готовим файлы (имя файла станет ТЕГОМ в geoip.dat)
           mkdir -p ./input
           cp ./data/* ./input/
 
-          # Исправленный конфиг: используем inputDir вместо uri внутри args
+          # 3. Создаем конфиг (используем формат, который бинарник точно съест)
           cat <<EOF > config.json
           {
             "input": [
               {
-                "type": "text",
+                "type": "v2ray-geoip",
                 "action": "add",
                 "args": {
-                  "inputDir": "./input"
+                  "uri": "./input"
                 }
               }
             ],
@@ -29,4 +48,11 @@
           }
           EOF
 
+          # 4. Запускаем сборку
           $(go env GOPATH)/bin/geoip -c config.json
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: geoip-file
+          path: geoip.dat
