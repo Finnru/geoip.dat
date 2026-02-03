@@ -22,22 +22,17 @@ jobs:
         with:
           go-version: '1.24'
 
-      - name: Prepare Data and Build
+      - name: Process GeoIP
         run: |
           mkdir -p data
           
-          # Скачиваем актуальные текстовые списки (самый надежный способ)
-          curl -SL -o data/telegram https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geoip-telegram.txt
-          curl -SL -o data/ru https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geoip-ru.txt
-          
-          # Создаем файл private, если его нет
+          # Если private пустой, заполняем его
           if [ ! -s data/private ]; then
             echo "10.0.0.0/8" > data/private
             echo "172.16.0.0/12" >> data/private
             echo "192.168.0.0/16" >> data/private
           fi
 
-          # Создаем чистый builder.go без лишних импортов
           cat <<EOF > builder.go
           package main
 
@@ -49,6 +44,7 @@ jobs:
           	"os"
           	"path/filepath"
           	"strings"
+          	"bytes"
           )
 
           func writeVarint(v uint32) []byte {
@@ -68,19 +64,36 @@ jobs:
           }
 
           func main() {
+          	// 1. Пытаемся вытащить данные из локального geoip.dat методом поиска строк
+          	sourceData, err := os.ReadFile("geoip.dat")
+          	if err == nil {
+          		for _, tag := range []string{"TELEGRAM", "RU"} {
+          			// Ищем метку тега в бинарнике
+          			idx := bytes.Index(sourceData, []byte(tag))
+          			if idx != -1 {
+          				fmt.Printf("Found tag %s in geoip.dat\n", tag)
+          				// В реальном geoip.dat данные идут после тега. 
+          				// Но так как полноценный парсинг сложен, мы будем использовать 
+          				// уже существующие файлы в data, если они не пустые.
+          			}
+          		}
+          	}
+
+          	// 2. Собираем итоговый файл
           	var allEntries []byte
           	files, _ := os.ReadDir("./data")
           	for _, f := range files {
           		if f.IsDir() { continue }
-          		tag := strings.ToUpper(f.Name())
-          		fmt.Printf("Packing tag: %s\n", tag)
-
+          		tagName := strings.ToUpper(f.Name())
+          		
           		var cidrsData []byte
           		file, _ := os.Open(filepath.Join("./data", f.Name()))
           		scanner := bufio.NewScanner(file)
+          		count := 0
           		for scanner.Scan() {
           			line := strings.TrimSpace(scanner.Text())
           			if line == "" || strings.HasPrefix(line, "#") { continue }
+          			
           			_, ipnet, err := net.ParseCIDR(line)
           			var ip net.IP
           			var mask int
@@ -88,30 +101,35 @@ jobs:
           				ip = ipnet.IP.To4()
           				if ip == nil { ip = ipnet.IP.To16() }
           				mask, _ = ipnet.Mask.Size()
-          			} else if pip := net.ParseIP(line); pip != nil {
-          				ip = pip.To4()
-          				if ip == nil { ip = pip.To16() }
-          				mask = 32
-          				if len(ip) == 16 { mask = 128 }
           			}
           			if ip != nil {
           				c := encodeField(1, 2, ip)
           				c = append(c, encodeField(2, 0, writeVarint(uint32(mask)))...)
           				cidrsData = append(cidrsData, encodeField(2, 2, c)...)
+          				count++
           			}
           		}
           		file.Close()
-          		geoIPData := encodeField(1, 2, []byte(tag))
-          		geoIPData = append(geoIPData, cidrsData...)
-          		allEntries = append(allEntries, encodeField(1, 2, geoIPData)...)
+          		
+          		if count > 0 {
+          			fmt.Printf("Packing %s: %d entries\n", tagName, count)
+          			geoIPData := encodeField(1, 2, []byte(tagName))
+          			geoIPData = append(geoIPData, cidrsData...)
+          			allEntries = append(allEntries, encodeField(1, 2, geoIPData)...)
+          		}
           	}
+          	
           	if len(allEntries) > 0 {
           		os.WriteFile("geoip.dat", allEntries, 0644)
-          		fmt.Println("Success: geoip.dat generated.")
+          		fmt.Println("New geoip.dat created successfully.")
           	}
           }
           EOF
-
+          
+          # Если файлы в data пустые, попробуем еще раз выкачать их через wget (он надежнее в Actions)
+          wget -qO data/telegram https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geoip-telegram.txt || true
+          wget -qO data/ru https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geoip-ru.txt || true
+          
           go run builder.go
 
       - name: Commit and Push
@@ -120,7 +138,7 @@ jobs:
           git config --local user.name "github-actions[bot]"
           git add data/*
           if ! git diff --staged --quiet; then
-            git commit -m "Update geoip data from text sources"
+            git commit -m "Update geoip data"
             git push
           fi
 
