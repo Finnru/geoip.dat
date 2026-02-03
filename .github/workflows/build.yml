@@ -1,114 +1,52 @@
-name: Build-GeoIP-Raw
+name: Filter-GeoIP-to-Data
+
 on:
   workflow_dispatch:
   push:
     branches: [master, main]
 
+permissions:
+  contents: write
+
 jobs:
-  build:
+  filter:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
-
-      - name: Create Generator Script
+      - name: Install v2dat
         run: |
-          cat <<EOF > builder.go
-          package main
+          # Устанавливаем утилиту для работы с .dat файлами
+          curl -L https://github.com/uraimo/v2dat/releases/latest/download/v2dat-linux-x64.tar.gz | tar xz
+          sudo mv v2dat /usr/local/bin/
 
-          import (
-          	"bufio"
-          	"encoding/binary"
-          	"fmt"
-          	"log"
-          	"net"
-          	"os"
-          	"path/filepath"
-          	"strings"
-          )
+      - name: Download and Filter GeoIP
+        run: |
+          mkdir -p data
+          # Скачиваем исходный файл
+          curl -Lo source_geoip.dat https://github.com/runetfreedom/russia-v2ray-rules-dat/raw/refs/heads/release/geoip.dat
+          
+          # Распаковываем только нужные категории
+          # v2dat unpack geoip -p <список> -o <папка> <файл>
+          v2dat unpack geoip -p telegram,ru,private -o data source_geoip.dat
+          
+          # v2dat создает файлы вида geoip_telegram.txt, переименуем их в чистые имена
+          mv data/geoip_telegram.txt data/telegram || true
+          mv data/geoip_ru.txt data/ru || true
+          mv data/geoip_private.txt data/private || true
+          
+          # Удаляем мусор, если он создался (v2dat иногда создает пустые файлы)
+          rm -f source_geoip.dat
 
-          // Пишем Varint (стандарт упаковки чисел в Protobuf)
-          func writeVarint(v uint32) []byte {
-          	var buf [binary.MaxVarintLen32]byte
-          	n := binary.PutUvarint(buf[:], uint64(v))
-          	return buf[:n]
-          }
-
-          // Кодируем поле Protobuf (номер поля, тип, данные)
-          func encodeField(num int, wireType int, data []byte) []byte {
-          	tag := uint32((num << 3) | wireType)
-          	res := writeVarint(tag)
-          	if wireType == 2 { // Length-delimited
-          		res = append(res, writeVarint(uint32(len(data)))...)
-          	}
-          	res = append(res, data...)
-          	return res
-          }
-
-          func main() {
-          	var allEntries []byte
-          	files, err := os.ReadDir("./data")
-          	if err != nil { log.Fatal(err) }
-
-          	for _, f := range files {
-          		if f.IsDir() { continue }
-          		tag := strings.ToUpper(f.Name())
-          		fmt.Printf("Packing tag: %s\n", tag)
-
-          		var cidrsData []byte
-          		file, _ := os.Open(filepath.Join("./data", f.Name()))
-          		scanner := bufio.NewScanner(file)
-          		for scanner.Scan() {
-          			line := strings.TrimSpace(scanner.Text())
-          			if line == "" || strings.HasPrefix(line, "#") { continue }
-
-          			_, ipnet, err := net.ParseCIDR(line)
-          			var ip net.IP
-          			var mask int
-          			if err == nil {
-          				ip = ipnet.IP.To4()
-          				if ip == nil { ip = ipnet.IP.To16() }
-          				mask, _ = ipnet.Mask.Size()
-          			} else if pip := net.ParseIP(line); pip != nil {
-          				ip = pip.To4()
-          				if ip == nil { ip = pip.To16() }
-          				mask = 32
-          				if len(ip) == 16 { mask = 128 }
-          			}
-
-          			if ip != nil {
-          				// Собираем структуру CIDR: field 1 (ip), field 2 (prefix)
-          				c := encodeField(1, 2, ip)
-          				c = append(c, encodeField(2, 0, writeVarint(uint32(mask)))...)
-          				// Добавляем в список CIDR внутри GeoIP (field 2)
-          				cidrsData = append(cidrsData, encodeField(2, 2, c)...)
-          			}
-          		}
-          		file.Close()
-
-          		// Собираем структуру GeoIP: field 1 (country_code), field 2 (repeated CIDR)
-          		geoIPData := encodeField(1, 2, []byte(tag))
-          		geoIPData = append(geoIPData, cidrsData...)
-          		
-          		// Добавляем GeoIP в общий список GeoIPList (field 1)
-          		allEntries = append(allEntries, encodeField(1, 2, geoIPData)...)
-          	}
-
-          	os.WriteFile("geoip.dat", allEntries, 0644)
-          	fmt.Println("Done: geoip.dat saved.")
-          }
-          EOF
-
-      - name: Run Generator
-        run: go run builder.go
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: geoip-artifact
-          path: geoip.dat
+      - name: Commit and Push
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add data/*
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git commit -m "Update filtered geoip data: telegram, ru, private"
+          git push
