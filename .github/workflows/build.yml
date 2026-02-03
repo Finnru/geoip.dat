@@ -22,9 +22,22 @@ jobs:
         with:
           go-version: '1.24'
 
-      - name: Process GeoIP
+      - name: Prepare Data and Build
         run: |
           mkdir -p data
+          
+          # Скачиваем актуальные текстовые списки (самый надежный способ)
+          curl -SL -o data/telegram https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geoip-telegram.txt
+          curl -SL -o data/ru https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geoip-ru.txt
+          
+          # Создаем файл private, если его нет
+          if [ ! -s data/private ]; then
+            echo "10.0.0.0/8" > data/private
+            echo "172.16.0.0/12" >> data/private
+            echo "192.168.0.0/16" >> data/private
+          fi
+
+          # Создаем чистый builder.go без лишних импортов
           cat <<EOF > builder.go
           package main
 
@@ -32,20 +45,11 @@ jobs:
           	"bufio"
           	"encoding/binary"
           	"fmt"
-          	"io"
-          	"log"
           	"net"
           	"os"
           	"path/filepath"
           	"strings"
           )
-
-          // --- Простейший парсер Protobuf для GeoIP ---
-
-          func readVarint(r *bufio.Reader) (uint32, error) {
-          	v, err := binary.ReadUvarint(r)
-          	return uint32(v), err
-          }
 
           func writeVarint(v uint32) []byte {
           	buf := make([]byte, binary.MaxVarintLen32)
@@ -64,31 +68,6 @@ jobs:
           }
 
           func main() {
-          	// 1. Пытаемся распаковать нужные теги из существующего geoip.dat
-          	if _, err := os.Stat("geoip.dat"); err == nil {
-          		fmt.Println("Found existing geoip.dat, extracting...")
-          		extractTags("geoip.dat", []string{"TELEGRAM", "RU", "PRIVATE"})
-          	}
-
-          	// 2. Собираем новый файл из того, что теперь лежит в data/
-          	packTags()
-          }
-
-          func extractTags(filename string, targets []string) {
-          	f, err := os.Open(filename)
-          	if err != nil { return }
-          	defer f.Close()
-          	
-          	// Это упрощенная логика: ищем текстовые метки в бинарнике 
-          	// и вытягиваем IP. Для надежности просто запишем те данные, 
-          	// которые ты просил для PRIVATE вручную, если их нет.
-          	privateFile := "data/private"
-          	if _, err := os.Stat(privateFile); os.IsNotExist(err) {
-          		os.WriteFile(privateFile, []byte("10.0.0.0/8\n172.16.0.0/12\n192.168.0.0/16\n"), 0644)
-          	}
-          }
-
-          func packTags() {
           	var allEntries []byte
           	files, _ := os.ReadDir("./data")
           	for _, f := range files {
@@ -109,6 +88,11 @@ jobs:
           				ip = ipnet.IP.To4()
           				if ip == nil { ip = ipnet.IP.To16() }
           				mask, _ = ipnet.Mask.Size()
+          			} else if pip := net.ParseIP(line); pip != nil {
+          				ip = pip.To4()
+          				if ip == nil { ip = pip.To16() }
+          				mask = 32
+          				if len(ip) == 16 { mask = 128 }
           			}
           			if ip != nil {
           				c := encodeField(1, 2, ip)
@@ -122,11 +106,12 @@ jobs:
           		allEntries = append(allEntries, encodeField(1, 2, geoIPData)...)
           	}
           	if len(allEntries) > 0 {
-          		os.WriteFile("geoip-new.dat", allEntries, 0644)
-          		fmt.Println("Created geoip-new.dat")
+          		os.WriteFile("geoip.dat", allEntries, 0644)
+          		fmt.Println("Success: geoip.dat generated.")
           	}
           }
           EOF
+
           go run builder.go
 
       - name: Commit and Push
@@ -135,12 +120,12 @@ jobs:
           git config --local user.name "github-actions[bot]"
           git add data/*
           if ! git diff --staged --quiet; then
-            git commit -m "Sync data folder"
+            git commit -m "Update geoip data from text sources"
             git push
           fi
 
-      - name: Upload New Dat
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: filtered-geoip
-          path: geoip-new.dat
+          name: geoip-artifact
+          path: geoip.dat
