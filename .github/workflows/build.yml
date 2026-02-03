@@ -22,16 +22,29 @@ jobs:
         with:
           go-version: '1.24'
 
-      - name: Download Source and Build
+      - name: Install v2dat (Alternative Source)
+        run: |
+          # Используем другой метод установки или проверенную бинарку
+          # Но чтобы не рисковать с curl, мы сделаем всё через Go
+          go install github.com/uraimo/v2dat@latest
+
+      - name: Extract and Pack
         run: |
           mkdir -p data
-          # Скачиваем оригинал
-          curl -SL -o source_geoip.dat https://github.com/runetfreedom/russia-v2ray-rules-dat/raw/refs/heads/release/geoip.dat
           
-          # Создаем комбайн-скрипт, который умеет и читать, и писать .dat
+          # 1. Распаковываем категории из твоего локального geoip.dat в папку data
+          # v2dat при установке через go install обычно попадает в ~/go/bin
+          ~/go/bin/v2dat unpack geoip -p telegram,ru,private -o data ./geoip.dat
+          
+          # 2. Переименовываем файлы в чистый вид
+          [ -f data/geoip_telegram.txt ] && mv data/geoip_telegram.txt data/telegram
+          [ -f data/geoip_ru.txt ] && mv data/geoip_ru.txt data/ru
+          [ -f data/geoip_private.txt ] && mv data/geoip_private.txt data/private
+
+      - name: Create Generator Script
+        run: |
           cat <<EOF > builder.go
           package main
-
           import (
           	"bufio"
           	"encoding/binary"
@@ -42,14 +55,11 @@ jobs:
           	"path/filepath"
           	"strings"
           )
-
-          // Вспомогательные функции Protobuf
           func writeVarint(v uint32) []byte {
           	var buf [binary.MaxVarintLen32]byte
           	n := binary.PutUvarint(buf[:], uint64(v))
           	return buf[:n]
           }
-
           func encodeField(num int, wireType int, data []byte) []byte {
           	tag := uint32((num << 3) | wireType)
           	res := writeVarint(tag)
@@ -59,28 +69,20 @@ jobs:
           	res = append(res, data...)
           	return res
           }
-
           func main() {
-          	// Если файлы уже есть в data, пакуем их. 
-          	// Если мы хотим сначала вытащить их из source_geoip.dat, 
-          	// нам проще использовать готовые списки, но раз мы хотим автоматизацию:
-          	
           	var allEntries []byte
           	files, err := os.ReadDir("./data")
           	if err != nil { log.Fatal(err) }
-
           	for _, f := range files {
           		if f.IsDir() { continue }
           		tag := strings.ToUpper(f.Name())
           		fmt.Printf("Packing tag: %s\n", tag)
-
           		var cidrsData []byte
           		file, _ := os.Open(filepath.Join("./data", f.Name()))
           		scanner := bufio.NewScanner(file)
           		for scanner.Scan() {
           			line := strings.TrimSpace(scanner.Text())
           			if line == "" || strings.HasPrefix(line, "#") { continue }
-
           			_, ipnet, err := net.ParseCIDR(line)
           			var ip net.IP
           			var mask int
@@ -94,7 +96,6 @@ jobs:
           				mask = 32
           				if len(ip) == 16 { mask = 128 }
           			}
-
           			if ip != nil {
           				c := encodeField(1, 2, ip)
           				c = append(c, encodeField(2, 0, writeVarint(uint32(mask)))...)
@@ -102,47 +103,31 @@ jobs:
           			}
           		}
           		file.Close()
-
           		geoIPData := encodeField(1, 2, []byte(tag))
           		geoIPData = append(geoIPData, cidrsData...)
           		allEntries = append(allEntries, encodeField(1, 2, geoIPData)...)
           	}
-
           	if len(allEntries) > 0 {
-          		os.WriteFile("geoip.dat", allEntries, 0644)
-          		fmt.Println("Success: geoip.dat generated.")
-          	} else {
-          		fmt.Println("Warning: No data found to pack.")
+          		os.WriteFile("geoip-new.dat", allEntries, 0644)
           	}
           }
           EOF
 
-          # Пока что у нас нет простого распаковщика на Go в этом скрипте, 
-          # но мы можем достать данные простым grep/sed, так как IP в .dat лежат в открытом виде (бинарно), 
-          # либо просто использовать текстовые источники.
-          
-          # Давай временно возьмем текстовые источники напрямую, это на 100% надежнее
-          curl -SL -o data/telegram https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geoip-telegram.txt
-          curl -SL -o data/ru https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geoip-ru.txt
-          # Private обычно статичен, создадим его если нет
-          echo "10.0.0.0/8" > data/private
-          echo "172.16.0.0/12" >> data/private
-          echo "192.168.0.0/16" >> data/private
+      - name: Run Builder
+        run: go run builder.go
 
-          go run builder.go
-
-      - name: Commit and Push
+      - name: Commit and Push Data
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add data/*
           if ! git diff --staged --quiet; then
-            git commit -m "Update geoip data"
+            git commit -m "Update extracted data from local geoip.dat"
             git push
           fi
 
-      - name: Upload Artifact
+      - name: Upload New Dat
         uses: actions/upload-artifact@v4
         with:
-          name: geoip-artifact
-          path: geoip.dat
+          name: filtered-geoip
+          path: geoip-new.dat
