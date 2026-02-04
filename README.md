@@ -1,4 +1,6 @@
 Файл содержит только три категории:
-ru
-telegram
-private
+ru,
+telegram,
+private.
+База автоматически обновляется с сайта lite.ip2location.com,
+каждые три дня в 0:00.
