@@ -1,9 +1,9 @@
 name: Build-GeoIP-Raw
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Позволяет запускать вручную
   schedule:
-    - cron: "0 0 1 * *" 
+    - cron: "0 0 */3 * *" # ЗАПУСК РАЗ В 3 ДНЯ в полночь по UTC
   push:
     branches: [master, main]
 
@@ -25,14 +25,18 @@ jobs:
       - name: Prepare Data (IP2Location CIDR)
         run: |
           mkdir -p data
-          # Создаем переменную с датой для имени релиза
+          # Генерируем дату для использования в GitHub Actions
           echo "RELEASE_DATE=$(date +'%Y-%m-%d %H:%M')" >> $GITHUB_ENV
           
           TOKEN="Tw4ykNbvL6MSjRfIDPbktXhNsv3TSEdaQ5g7kutMxgeX0iUlrYr2JfCL1wrR7q8w"
+          
+          echo "Downloading IP2Location DB11LITECIDR..."
           curl -L -A "Mozilla/5.0" "https://www.ip2location.com/download/?token=${TOKEN}&file=DB11LITECIDR" -o db.zip
 
           unzip -o db.zip
           CSV_FILE=$(ls *.CSV 2>/dev/null | grep -i "CIDR" | head -n 1)
+          
+          # Парсим RU
           awk -F',' '$2 ~ /"RU"/ {gsub(/"/, "", $1); print $1}' "$CSV_FILE" > data/ru
           echo "Found $(wc -l < data/ru) RU ranges."
 
@@ -108,8 +112,14 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add data/ru
-          git commit -m "Update RU IPs from IP2Location CIDR [${{ env.RELEASE_DATE }}]" || echo "No changes"
+          git commit -m "Update RU IPs [${{ env.RELEASE_DATE }}]" || echo "No changes"
           git push
+
+      - name: Delete Old Release Tag
+        run: |
+          # Удаляем локальный и удаленный тег, чтобы форсировать обновление даты релиза
+          git tag -d latest || true
+          git push origin :refs/tags/latest || true
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -117,6 +127,7 @@ jobs:
         with:
           tag_name: latest
           name: "GeoIP Build: ${{ env.RELEASE_DATE }}"
+          body: "Обновлено автоматически раз в 3 дня. Источник: IP2Location LITE."
           draft: false
           prerelease: false
           make_latest: true
