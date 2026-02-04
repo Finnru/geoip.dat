@@ -1,4 +1,5 @@
 name: Build-GeoIP-Raw
+
 on:
   workflow_dispatch:
   push:
@@ -16,11 +17,25 @@ jobs:
         with:
           go-version: '1.24'
 
+      - name: Prepare Data
+        run: |
+          # Создаем папку для данных, если её нет
+          mkdir -p data
+          
+          # 1. Скачиваем исходный файл
+          curl -sSL https://raw.githubusercontent.com/Finnru/geoip.dat/main/origin/ip_lock -o ip_lock_raw
+          
+          # 2. Фильтруем только RU
+          # Ищем "RU", забираем первую колонку (IP/CIDR), удаляем лишние кавычки
+          grep '"RU"' ip_lock_raw | cut -d',' -f1 | tr -d '"' > data/ru
+          
+          # Выведем лог для проверки в консоль Actions
+          echo "Found $(wc -l < data/ru) RU ranges."
+
       - name: Create Generator Script
         run: |
           cat <<EOF > builder.go
           package main
-
           import (
           	"bufio"
           	"encoding/binary"
@@ -31,42 +46,34 @@ jobs:
           	"path/filepath"
           	"strings"
           )
-
-          // Пишем Varint (стандарт упаковки чисел в Protobuf)
           func writeVarint(v uint32) []byte {
           	var buf [binary.MaxVarintLen32]byte
           	n := binary.PutUvarint(buf[:], uint64(v))
           	return buf[:n]
           }
-
-          // Кодируем поле Protobuf (номер поля, тип, данные)
           func encodeField(num int, wireType int, data []byte) []byte {
           	tag := uint32((num << 3) | wireType)
           	res := writeVarint(tag)
-          	if wireType == 2 { // Length-delimited
+          	if wireType == 2 {
           		res = append(res, writeVarint(uint32(len(data)))...)
           	}
           	res = append(res, data...)
           	return res
           }
-
           func main() {
           	var allEntries []byte
           	files, err := os.ReadDir("./data")
           	if err != nil { log.Fatal(err) }
-
           	for _, f := range files {
           		if f.IsDir() { continue }
           		tag := strings.ToUpper(f.Name())
           		fmt.Printf("Packing tag: %s\n", tag)
-
           		var cidrsData []byte
           		file, _ := os.Open(filepath.Join("./data", f.Name()))
           		scanner := bufio.NewScanner(file)
           		for scanner.Scan() {
           			line := strings.TrimSpace(scanner.Text())
           			if line == "" || strings.HasPrefix(line, "#") { continue }
-
           			_, ipnet, err := net.ParseCIDR(line)
           			var ip net.IP
           			var mask int
@@ -80,25 +87,17 @@ jobs:
           				mask = 32
           				if len(ip) == 16 { mask = 128 }
           			}
-
           			if ip != nil {
-          				// Собираем структуру CIDR: field 1 (ip), field 2 (prefix)
           				c := encodeField(1, 2, ip)
           				c = append(c, encodeField(2, 0, writeVarint(uint32(mask)))...)
-          				// Добавляем в список CIDR внутри GeoIP (field 2)
           				cidrsData = append(cidrsData, encodeField(2, 2, c)...)
           			}
           		}
           		file.Close()
-
-          		// Собираем структуру GeoIP: field 1 (country_code), field 2 (repeated CIDR)
           		geoIPData := encodeField(1, 2, []byte(tag))
           		geoIPData = append(geoIPData, cidrsData...)
-          		
-          		// Добавляем GeoIP в общий список GeoIPList (field 1)
           		allEntries = append(allEntries, encodeField(1, 2, geoIPData)...)
           	}
-
           	os.WriteFile("geoip.dat", allEntries, 0644)
           	fmt.Println("Done: geoip.dat saved.")
           }
@@ -106,6 +105,20 @@ jobs:
 
       - name: Run Generator
         run: go run builder.go
+
+      - name: Generate Checksum
+        run: sha256sum geoip.dat > geoip.dat.sha256sum
+
+      - name: Release and Upload
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        with:
+          tag_name: latest
+          files: |
+            geoip.dat
+            geoip.dat.sha256sum
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
