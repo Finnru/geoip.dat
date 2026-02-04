@@ -5,6 +5,9 @@ on:
   push:
     branches: [master, main]
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -17,20 +20,27 @@ jobs:
         with:
           go-version: '1.24'
 
-      - name: Prepare Data
+      - name: Prepare Data (Extract RU IPs)
         run: |
-          # Создаем папку для данных, если её нет
           mkdir -p data
           
-          # 1. Скачиваем исходный файл
+          # 1. Скачиваем исходный файл ip_lock
           curl -sSL https://raw.githubusercontent.com/Finnru/geoip.dat/main/origin/ip_lock -o ip_lock_raw
           
-          # 2. Фильтруем только RU
-          # Ищем "RU", забираем первую колонку (IP/CIDR), удаляем лишние кавычки
-          grep '"RU"' ip_lock_raw | cut -d',' -f1 | tr -d '"' > data/ru
+          # 2. Проверяем, что файл не пустой
+          if [ ! -s ip_lock_raw ]; then echo "Source file is empty!"; exit 1; fi
+
+          # 3. Парсинг: забираем 1-ю колонку, если во 2-й есть "RU". Убираем кавычки.
+          awk -F',' '$2 ~ /"RU"/ {gsub(/"/, "", $1); print $1}' ip_lock_raw > data/ru
+
+          # 4. Проверка результата
+          if [ ! -s data/ru ]; then 
+            echo "Error: data/ru is empty! Check origin file format."
+            exit 1
+          fi
           
-          # Выведем лог для проверки в консоль Actions
-          echo "Found $(wc -l < data/ru) RU ranges."
+          echo "Success: Found $(wc -l < data/ru) RU ranges."
+          head -n 5 data/ru
 
       - name: Create Generator Script
         run: |
@@ -106,17 +116,21 @@ jobs:
       - name: Run Generator
         run: go run builder.go
 
-      - name: Generate Checksum
-        run: sha256sum geoip.dat > geoip.dat.sha256sum
+      - name: Commit and Push Data (Optional)
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add data/ru
+          git commit -m "Update RU IP list [$(date +%Y-%m-%d)]" || echo "No changes"
+          git push
 
-      - name: Release and Upload
+      - name: Create Release
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
         with:
           tag_name: latest
-          files: |
-            geoip.dat
-            geoip.dat.sha256sum
+          name: "Latest GeoIP Build"
+          files: geoip.dat
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
