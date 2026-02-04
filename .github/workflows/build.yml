@@ -1,27 +1,152 @@
-- name: Prepare Data (IP2Location CIDR)
+name: Build-GeoIP-Raw
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 1 * *" 
+  push:
+    branches: [master, main]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Prepare Data (IP2Location CIDR)
         run: |
           mkdir -p data
-          # Используем другой формат URL, который часто лучше работает в скриптах
-          # Также добавляем заголовки, чтобы имитировать браузер
           TOKEN="Tw4ykNbvL6MSjRfIDPbktXhNsv3TSEdaQ5g7kutMxgeX0iUlrYr2JfCL1wrR7q8w"
           
-          echo "Attempting to download..."
+          echo "Attempting to download DB11LITECIDR..."
+          # Используем правильный код файла DB11LITECIDR для получения CIDR версии
           curl -L -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
-               "https://www.ip2location.com/download/?token=${TOKEN}&file=DB1LITECIDR" \
+               "https://www.ip2location.com/download/?token=${TOKEN}&file=DB11LITECIDR" \
                -o db.zip
 
-          # Проверка: если файл меньше 10кб, значит это ошибка
+          # Проверка на минимальный размер (CIDR база весит больше 1мб)
           SIZE=$(stat -c%s db.zip)
           if [ "$SIZE" -lt 10000 ]; then
-            echo "ERROR: Downloaded file is too small ($SIZE bytes)."
-            echo "Contents of the file:"
+            echo "ERROR: Downloaded file is too small ($SIZE bytes). Probably an error message."
             cat db.zip
             exit 1
           fi
 
+          echo "Unzipping..."
           unzip -o db.zip
-          CSV_FILE=$(ls *.CSV 2>/dev/null | head -n 1) || CSV_FILE=$(ls *.csv 2>/dev/null | head -n 1)
           
-          # Парсинг RU
+          # Ищем файл IP2LOCATION-LITE-DB1.CIDR.CSV
+          CSV_FILE=$(ls *.CSV 2>/dev/null | grep -i "CIDR" | head -n 1)
+          
+          if [ -z "$CSV_FILE" ]; then
+            echo "Searching for any CSV as fallback..."
+            CSV_FILE=$(ls *.CSV 2>/dev/null | head -n 1)
+          fi
+          
+          if [ -z "$CSV_FILE" ]; then
+            echo "ERROR: CSV file not found in archive!"
+            ls -R
+            exit 1
+          fi
+          
+          echo "Processing file: $CSV_FILE"
+          
+          # Формат CIDR базы: "1.0.0.0/24","AU","Australia"
+          # Извлекаем RU из второй колонки
           awk -F',' '$2 ~ /"RU"/ {gsub(/"/, "", $1); print $1}' "$CSV_FILE" > data/ru
+          
+          echo "--- Result ---"
           echo "Found $(wc -l < data/ru) RU ranges."
+          head -n 5 data/ru
+
+      - name: Create Generator Script
+        run: |
+          cat <<EOF > builder.go
+          package main
+          import (
+          	"bufio"
+          	"encoding/binary"
+          	"fmt"
+          	"log"
+          	"net"
+          	"os"
+          	"path/filepath"
+          	"strings"
+          )
+          func writeVarint(v uint32) []byte {
+          	var buf [binary.MaxVarintLen32]byte
+          	n := binary.PutUvarint(buf[:], uint64(v))
+          	return buf[:n]
+          }
+          func encodeField(num int, wireType int, data []byte) []byte {
+          	tag := uint32((num << 3) | wireType)
+          	res := writeVarint(tag)
+          	if wireType == 2 {
+          		res = append(res, writeVarint(uint32(len(data)))...)
+          	}
+          	res = append(res, data...)
+          	return res
+          }
+          func main() {
+          	var allEntries []byte
+          	files, err := os.ReadDir("./data")
+          	if err != nil { log.Fatal(err) }
+          	for _, f := range files {
+          		if f.IsDir() { continue }
+          		tag := strings.ToUpper(f.Name())
+          		fmt.Printf("Packing tag: %s\n", tag)
+          		var cidrsData []byte
+          		file, _ := os.Open(filepath.Join("./data", f.Name()))
+          		scanner := bufio.NewScanner(file)
+          		for scanner.Scan() {
+          			line := strings.TrimSpace(scanner.Text())
+          			if line == "" || strings.HasPrefix(line, "#") { continue }
+          			_, ipnet, err := net.ParseCIDR(line)
+          			if err == nil {
+          				ip := ipnet.IP.To4()
+          				if ip == nil { ip = ipnet.IP.To16() }
+          				mask, _ := ipnet.Mask.Size()
+          				c := encodeField(1, 2, ip)
+          				c = append(c, encodeField(2, 0, writeVarint(uint32(mask)))...)
+          				cidrsData = append(cidrsData, encodeField(2, 2, c)...)
+          			}
+          		}
+          		file.Close()
+          		geoIPData := encodeField(1, 2, []byte(tag))
+          		geoIPData = append(geoIPData, cidrsData...)
+          		allEntries = append(allEntries, encodeField(1, 2, geoIPData)...)
+          	}
+          	os.WriteFile("geoip.dat", allEntries, 0644)
+          	fmt.Println("Done: geoip.dat saved.")
+          }
+          EOF
+
+      - name: Run Generator
+        run: go run builder.go
+
+      - name: Commit and Push Data
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add data/ru
+          git commit -m "Update RU IP list from IP2Location CIDR [$(date +%Y-%m-%d)]" || echo "No changes"
+          git push
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+        with:
+          tag_name: latest
+          name: "Latest GeoIP Build (IP2Location CIDR)"
+          files: geoip.dat
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
