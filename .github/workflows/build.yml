@@ -2,6 +2,8 @@ name: Build-GeoIP-Raw
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "0 0 1 * *" # Авто-обновление 1-го числа каждого месяца
   push:
     branches: [master, main]
 
@@ -20,22 +22,30 @@ jobs:
         with:
           go-version: '1.24'
 
-      - name: Prepare Data (Extract RU IPs)
+      - name: Prepare Data (Download and Extract IP2Location)
         run: |
           mkdir -p data
           
-          # 1. Скачиваем исходный файл ip_lock
-          curl -sSL https://raw.githubusercontent.com/Finnru/geoip.dat/main/origin/ip_lock -o ip_lock_raw
+          # 1. Скачиваем ZIP архив (используем твой ID/Token)
+          # Файл скачивается как DB-IP-COUNTRY.ZIP
+          curl -sSL "https://lite.ip2location.com/download?id=64&token=Tw4ykNbvL6MSjRfIDPbktXhNsv3TSEdaQ5g7kutMxgeX0iUlrYr2JfCL1wrR7q8w" -o db.zip
           
-          # 2. Проверяем, что файл не пустой
-          if [ ! -s ip_lock_raw ]; then echo "Source file is empty!"; exit 1; fi
+          # 2. Распаковываем ZIP
+          # Обычно внутри файл с расширением .CSV
+          unzip -o db.zip
+          
+          # 3. Находим CSV файл (имя может меняться, берем первый попавшийся .csv)
+          CSV_FILE=$(ls *.CSV | head -n 1)
+          echo "Processing file: $CSV_FILE"
+          
+          # 4. Парсинг данных
+          # Формат в файле: "1.0.0.0/24","AU","Australia"
+          # Используем awk: если 2-я колонка RU, убираем кавычки из 1-й и сохраняем
+          awk -F',' '$2 ~ /"RU"/ {gsub(/"/, "", $1); print $1}' "$CSV_FILE" > data/ru
 
-          # 3. Парсинг: забираем 1-ю колонку, если во 2-й есть "RU". Убираем кавычки.
-          awk -F',' '$2 ~ /"RU"/ {gsub(/"/, "", $1); print $1}' ip_lock_raw > data/ru
-
-          # 4. Проверка результата
+          # 5. Проверка результата
           if [ ! -s data/ru ]; then 
-            echo "Error: data/ru is empty! Check origin file format."
+            echo "Error: data/ru is empty! Extraction failed."
             exit 1
           fi
           
@@ -121,7 +131,7 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add data/ru
-          git commit -m "Update RU IP list [$(date +%Y-%m-%d)]" || echo "No changes"
+          git commit -m "Update RU IP list from IP2Location [$(date +%Y-%m-%d)]" || echo "No changes"
           git push
 
       - name: Create Release
@@ -129,7 +139,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
         with:
           tag_name: latest
-          name: "Latest GeoIP Build"
+          name: "Latest GeoIP Build (IP2Location)"
           files: geoip.dat
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
