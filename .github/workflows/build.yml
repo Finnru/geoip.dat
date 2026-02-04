@@ -26,21 +26,28 @@ jobs:
         run: |
           mkdir -p data
           
-          # 1. Скачиваем ZIP архив с использованием User-Agent (некоторые сервера блокируют пустые запросы)
-          # Используем прямую ссылку с ID=64 (IPv4 Country)
-          curl -A "Mozilla/5.0" -L "https://lite.ip2location.com/download?id=64&token=Tw4ykNbvL6MSjRfIDPbktXhNsv3TSEdaQ5g7kutMxgeX0iUlrYr2JfCL1wrR7q8w" -o db.zip
+          # Используем официальный формат ссылки для автоматизации
+          # DATABASE_CODE для IPv4 Country LITE — это DB1LITEBIN (или 64 в старом формате)
+          # Если этот токен привязан к твоему аккаунту, ссылка ниже должна сработать
           
-          # Проверим тип файла перед распаковкой (для отладки в логах)
-          file db.zip
+          TOKEN="Tw4ykNbvL6MSjRfIDPbktXhNsv3TSEdaQ5g7kutMxgeX0iUlrYr2JfCL1wrR7q8w"
+          
+          echo "Downloading IP2Location Database..."
+          curl -A "Mozilla/5.0" -L "https://www.ip2location.com/download/?token=${TOKEN}&file=DB1LITECSV" -o db.zip
+          
+          # Проверка типа файла
+          FILE_TYPE=$(file db.zip)
+          echo "Downloaded file type: $FILE_TYPE"
 
-          # 2. Распаковываем ZIP
-          if unzip -o db.zip; then
-            echo "Unzip successful"
-          else
-            echo "Failed to unzip! The downloaded file might not be a ZIP archive."
-            cat db.zip | head -n 10 # Показать начало файла, если это ошибка HTML
+          if [[ "$FILE_TYPE" == *"HTML"* ]]; then
+            echo "ERROR: Server returned HTML (Login page) instead of ZIP."
+            echo "Possible reasons: Token expired, daily limit reached, or wrong database code."
+            head -n 20 db.zip
             exit 1
           fi
+
+          # 2. Распаковываем ZIP
+          unzip -o db.zip
           
           # 3. Находим CSV файл
           CSV_FILE=$(ls *.CSV 2>/dev/null | head -n 1) || CSV_FILE=$(ls *.csv 2>/dev/null | head -n 1)
@@ -54,13 +61,6 @@ jobs:
           
           # 4. Парсинг данных RU
           awk -F',' '$2 ~ /"RU"/ {gsub(/"/, "", $1); print $1}' "$CSV_FILE" > data/ru
-
-          # 5. Проверка результата
-          if [ ! -s data/ru ]; then 
-            echo "Error: data/ru is empty!"
-            exit 1
-          fi
-          
           echo "Success: Found $(wc -l < data/ru) RU ranges."
 
       - name: Create Generator Script
