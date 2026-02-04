@@ -1,5 +1,4 @@
-name: Build-GeoIP-Custom
-
+name: Build-GeoIP-Raw
 on:
   workflow_dispatch:
   push:
@@ -12,42 +11,39 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up Go
+      - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
 
-      - name: Build Generator and Process
+      - name: Create Generator Script
         run: |
-          mkdir -p data output
-          
-          # Создаем файл проекта, чтобы Go не ругался
-          [ -f go.mod ] || go mod init github.com/Finnru/geoip.dat
-
-          # Пишем код упаковщика
-          cat <<EOF > main.go
+          cat <<EOF > builder.go
           package main
 
           import (
           	"bufio"
           	"encoding/binary"
           	"fmt"
+          	"log"
           	"net"
           	"os"
           	"path/filepath"
           	"strings"
           )
 
+          // Пишем Varint (стандарт упаковки чисел в Protobuf)
           func writeVarint(v uint32) []byte {
-          	buf := make([]byte, binary.MaxVarintLen32)
-          	n := binary.PutUvarint(buf, uint64(v))
+          	var buf [binary.MaxVarintLen32]byte
+          	n := binary.PutUvarint(buf[:], uint64(v))
           	return buf[:n]
           }
 
+          // Кодируем поле Protobuf (номер поля, тип, данные)
           func encodeField(num int, wireType int, data []byte) []byte {
           	tag := uint32((num << 3) | wireType)
           	res := writeVarint(tag)
-          	if wireType == 2 {
+          	if wireType == 2 { // Length-delimited
           		res = append(res, writeVarint(uint32(len(data)))...)
           	}
           	res = append(res, data...)
@@ -55,74 +51,64 @@ jobs:
           }
 
           func main() {
-          	// Список категорий, которые мы оставляем
-          	categories := []string{"private", "ru", "telegram"}
           	var allEntries []byte
+          	files, err := os.ReadDir("./data")
+          	if err != nil { log.Fatal(err) }
 
-          	for _, cat := range categories {
-          		path := filepath.Join("data", cat)
-          		// Если файла в data нет, попробуем создать заглушку для теста или взять существующий
-          		if _, err := os.Stat(path); err != nil {
-          			fmt.Printf("Category %s not found in data/, skipping...\n", cat)
-          			continue
-          		}
+          	for _, f := range files {
+          		if f.IsDir() { continue }
+          		tag := strings.ToUpper(f.Name())
+          		fmt.Printf("Packing tag: %s\n", tag)
 
-          		fmt.Printf("Packing %s...\n", strings.ToUpper(cat))
-          		file, _ := os.Open(path)
-          		scanner := bufio.NewScanner(file)
           		var cidrsData []byte
-          		
+          		file, _ := os.Open(filepath.Join("./data", f.Name()))
+          		scanner := bufio.NewScanner(file)
           		for scanner.Scan() {
           			line := strings.TrimSpace(scanner.Text())
           			if line == "" || strings.HasPrefix(line, "#") { continue }
-          			
+
           			_, ipnet, err := net.ParseCIDR(line)
+          			var ip net.IP
+          			var mask int
           			if err == nil {
-          				mask, _ := ipnet.Mask.Size()
-          				ip := ipnet.IP.To4()
+          				ip = ipnet.IP.To4()
           				if ip == nil { ip = ipnet.IP.To16() }
-          				
+          				mask, _ = ipnet.Mask.Size()
+          			} else if pip := net.ParseIP(line); pip != nil {
+          				ip = pip.To4()
+          				if ip == nil { ip = pip.To16() }
+          				mask = 32
+          				if len(ip) == 16 { mask = 128 }
+          			}
+
+          			if ip != nil {
+          				// Собираем структуру CIDR: field 1 (ip), field 2 (prefix)
           				c := encodeField(1, 2, ip)
           				c = append(c, encodeField(2, 0, writeVarint(uint32(mask)))...)
+          				// Добавляем в список CIDR внутри GeoIP (field 2)
           				cidrsData = append(cidrsData, encodeField(2, 2, c)...)
           			}
           		}
           		file.Close()
 
-          		if len(cidrsData) > 0 {
-          			geoIPData := encodeField(1, 2, []byte(strings.ToUpper(cat)))
-          			geoIPData = append(geoIPData, cidrsData...)
-          			allEntries = append(allEntries, encodeField(1, 2, geoIPData)...)
-          		}
+          		// Собираем структуру GeoIP: field 1 (country_code), field 2 (repeated CIDR)
+          		geoIPData := encodeField(1, 2, []byte(tag))
+          		geoIPData = append(geoIPData, cidrsData...)
+          		
+          		// Добавляем GeoIP в общий список GeoIPList (field 1)
+          		allEntries = append(allEntries, encodeField(1, 2, geoIPData)...)
           	}
 
-          	if len(allEntries) > 0 {
-          		os.WriteFile("output/geoip.dat", allEntries, 0644)
-          		fmt.Println("Done! geoip.dat saved to output/")
-          	}
+          	os.WriteFile("geoip.dat", allEntries, 0644)
+          	fmt.Println("Done: geoip.dat saved.")
           }
           EOF
 
-          # Запускаем сборку (как у «них»)
-          go run main.go
-
-      - name: Move and Checksum
-        run: |
-          mkdir -p publish
-          cd output
-          sha256sum geoip.dat > geoip.dat.sha256sum
-          mv geoip.dat geoip.dat.sha256sum ../publish/
-
-      - name: Commit data files
-        run: |
-          git config --local user.email "actions@github.com"
-          git config --local user.name "GitHub Actions"
-          git add data/*
-          git commit -m "Update data" || echo "No changes"
-          git push
+      - name: Run Generator
+        run: go run builder.go
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: geoip-dist
-          path: publish/*
+          name: geoip-artifact
+          path: geoip.dat
