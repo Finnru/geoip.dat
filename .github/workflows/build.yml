@@ -3,7 +3,7 @@ name: Build-GeoIP-Raw
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 0 1 * *" # Авто-обновление 1-го числа каждого месяца
+    - cron: "0 0 1 * *" 
   push:
     branches: [master, main]
 
@@ -25,26 +25,15 @@ jobs:
       - name: Prepare Data (IP2Location CIDR)
         run: |
           mkdir -p data
-          TOKEN="Tw4ykNbvL6MSjRfIDPbktXhNsv3TSEdaQ5g7kutMxgeX0iUlrYr2JfCL1wrR7q8w"
+          # Создаем переменную с датой для имени релиза
+          echo "RELEASE_DATE=$(date +'%Y-%m-%d %H:%M')" >> $GITHUB_ENV
           
-          echo "Downloading IP2Location DB11LITECIDR..."
-          curl -L -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
-               "https://www.ip2location.com/download/?token=${TOKEN}&file=DB11LITECIDR" \
-               -o db.zip
-
-          SIZE=$(stat -c%s db.zip)
-          if [ "$SIZE" -lt 10000 ]; then
-            echo "ERROR: Downloaded file is too small. Check token/limits."
-            cat db.zip
-            exit 1
-          fi
+          TOKEN="Tw4ykNbvL6MSjRfIDPbktXhNsv3TSEdaQ5g7kutMxgeX0iUlrYr2JfCL1wrR7q8w"
+          curl -L -A "Mozilla/5.0" "https://www.ip2location.com/download/?token=${TOKEN}&file=DB11LITECIDR" -o db.zip
 
           unzip -o db.zip
           CSV_FILE=$(ls *.CSV 2>/dev/null | grep -i "CIDR" | head -n 1)
-          
-          # Извлекаем RU из второй колонки
           awk -F',' '$2 ~ /"RU"/ {gsub(/"/, "", $1); print $1}' "$CSV_FILE" > data/ru
-          
           echo "Found $(wc -l < data/ru) RU ranges."
 
       - name: Create Generator Script
@@ -105,7 +94,6 @@ jobs:
           		allEntries = append(allEntries, encodeField(1, 2, geoIPData)...)
           	}
           	os.WriteFile("geoip.dat", allEntries, 0644)
-          	fmt.Println("Done.")
           }
           EOF
 
@@ -120,15 +108,15 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add data/ru
-          git commit -m "Update RU IPs from IP2Location CIDR [$(date +%Y-%m-%d)]" || echo "No changes"
+          git commit -m "Update RU IPs from IP2Location CIDR [${{ env.RELEASE_DATE }}]" || echo "No changes"
           git push
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
-        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
         with:
           tag_name: latest
-          name: "GeoIP Build: $(date +'%Y-%m-%d %H:%M')"
+          name: "GeoIP Build: ${{ env.RELEASE_DATE }}"
           draft: false
           prerelease: false
           make_latest: true
