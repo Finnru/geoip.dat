@@ -3,7 +3,7 @@ name: Build-GeoIP-Raw
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 0 1 * *" # Авто-обновление 1-го числа каждого месяца
+    - cron: "0 0 1 * *" 
   push:
     branches: [master, main]
 
@@ -26,31 +26,42 @@ jobs:
         run: |
           mkdir -p data
           
-          # 1. Скачиваем ZIP архив (используем твой ID/Token)
-          # Файл скачивается как DB-IP-COUNTRY.ZIP
-          curl -sSL "https://lite.ip2location.com/download?id=64&token=Tw4ykNbvL6MSjRfIDPbktXhNsv3TSEdaQ5g7kutMxgeX0iUlrYr2JfCL1wrR7q8w" -o db.zip
+          # 1. Скачиваем ZIP архив с использованием User-Agent (некоторые сервера блокируют пустые запросы)
+          # Используем прямую ссылку с ID=64 (IPv4 Country)
+          curl -A "Mozilla/5.0" -L "https://lite.ip2location.com/download?id=64&token=Tw4ykNbvL6MSjRfIDPbktXhNsv3TSEdaQ5g7kutMxgeX0iUlrYr2JfCL1wrR7q8w" -o db.zip
           
+          # Проверим тип файла перед распаковкой (для отладки в логах)
+          file db.zip
+
           # 2. Распаковываем ZIP
-          # Обычно внутри файл с расширением .CSV
-          unzip -o db.zip
+          if unzip -o db.zip; then
+            echo "Unzip successful"
+          else
+            echo "Failed to unzip! The downloaded file might not be a ZIP archive."
+            cat db.zip | head -n 10 # Показать начало файла, если это ошибка HTML
+            exit 1
+          fi
           
-          # 3. Находим CSV файл (имя может меняться, берем первый попавшийся .csv)
-          CSV_FILE=$(ls *.CSV | head -n 1)
+          # 3. Находим CSV файл
+          CSV_FILE=$(ls *.CSV 2>/dev/null | head -n 1) || CSV_FILE=$(ls *.csv 2>/dev/null | head -n 1)
+          
+          if [ -z "$CSV_FILE" ]; then
+            echo "No CSV file found in archive!"
+            exit 1
+          fi
+          
           echo "Processing file: $CSV_FILE"
           
-          # 4. Парсинг данных
-          # Формат в файле: "1.0.0.0/24","AU","Australia"
-          # Используем awk: если 2-я колонка RU, убираем кавычки из 1-й и сохраняем
+          # 4. Парсинг данных RU
           awk -F',' '$2 ~ /"RU"/ {gsub(/"/, "", $1); print $1}' "$CSV_FILE" > data/ru
 
           # 5. Проверка результата
           if [ ! -s data/ru ]; then 
-            echo "Error: data/ru is empty! Extraction failed."
+            echo "Error: data/ru is empty!"
             exit 1
           fi
           
           echo "Success: Found $(wc -l < data/ru) RU ranges."
-          head -n 5 data/ru
 
       - name: Create Generator Script
         run: |
@@ -143,9 +154,3 @@ jobs:
           files: geoip.dat
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: geoip-artifact
-          path: geoip.dat
