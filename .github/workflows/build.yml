@@ -3,7 +3,7 @@ name: Build-GeoIP-Raw
 on:
   workflow_dispatch: # Позволяет запускать вручную
   schedule:
-    - cron: "0 0 */3 * *" # ЗАПУСК РАЗ В 3 ДНЯ в полночь по UTC
+    - cron: "0 0 */1 * *" # ЗАПУСК РАЗ В 3 ДНЯ в полночь по UTC
   push:
     branches: [master, main]
 
@@ -31,7 +31,7 @@ jobs:
           TOKEN="Tw4ykNbvL6MSjRfIDPbktXhNsv3TSEdaQ5g7kutMxgeX0iUlrYr2JfCL1wrR7q8w"
           
           echo "Downloading IP2Location DB11LITECIDR..."
-          curl -L -A "Mozilla/5.0" "https://www.ip2location.com/download/?token=${TOKEN}&file=DB11LITECIDR" -o db.zip
+          curl -L -A "Mozilla/5.0" "https://www.ip 2location.com/download/?token=${TOKEN}&file=DB11LITECIDR" -o db.zip
 
           unzip -o db.zip
           CSV_FILE=$(ls *.CSV 2>/dev/null | grep -i "CIDR" | head -n 1)
