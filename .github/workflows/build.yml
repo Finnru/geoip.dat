@@ -26,7 +26,7 @@ jobs:
         run: |
           mkdir -p data
           # Генерируем дату для использования в GitHub Actions
-          echo "RELEASE_DATE=$(date +'%Y-%m-%d %H:%M')" >> $GITHUB_ENV
+          echo "RELEASE_DATE=$(TZ='Europe/Moscow' date +'%Y-%m-%d %H:%M')" >> $GITHUB_ENV
           
           echo "Downloading RU IP ranges from ipdeny.com..."
           # Скачиваем зону с IP-диапазонами для России
