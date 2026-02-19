@@ -3,7 +3,7 @@ name: Build-GeoIP-Raw
 on:
   workflow_dispatch: # Позволяет запускать вручную
   schedule:
-    - cron: "0 0 */1 * *" 
+    - cron: "0 0 */3 * *" 
   push:
     branches: [master, main]
 
