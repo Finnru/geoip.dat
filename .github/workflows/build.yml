@@ -6,6 +6,8 @@ on:
     - cron: "0 0 */3 * *" 
   push:
     branches: [master, main]
+    paths-ignore:
+      - 'data/**'
 
 permissions:
   contents: write
