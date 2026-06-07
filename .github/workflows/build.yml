@@ -19,7 +19,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Гарантирует полную историю для работы с тегами
+          fetch-depth: 0 # Гарантирует загрузку истории для корректной работы с тегами
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -46,8 +46,10 @@ jobs:
           sed -i '/^$/d' data/ru
           sed -i '/^#/d' data/ru
           
+          # Считаем количество диапазонов и сохраняем в ENV для релиза
           RANGES_COUNT=$(wc -l < data/ru)
           echo "RANGES_COUNT=$RANGES_COUNT" >> $GITHUB_ENV
+          
           echo "Found $RANGES_COUNT RU ranges."
           echo "Sample of first 5 ranges:"
           head -5 data/ru
@@ -144,8 +146,7 @@ jobs:
 
       - name: Prepare Release (Safe Delete)
         run: |
-          # Используем официальную утилиту GitHub CLI вместо прямых манипуляций с Git
-          # Она удаляет релиз и тег атомарно через API
+          # Чистим старый релиз и тег напрямую через GitHub API, чтобы избежать конфликтов блокировки
           gh release delete latest --yes || true
           gh api -X DELETE /repos/${{ github.repository }}/git/refs/tags/latest || true
         env:
@@ -153,7 +154,7 @@ jobs:
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
-        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
         with:
           tag_name: latest
           name: "GeoIP Build: ${{ env.RELEASE_DATE }}"
