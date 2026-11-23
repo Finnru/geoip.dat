@@ -25,6 +25,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
+          cache: false # в проекте нет go.sum, кэшировать нечего
 
       - name: Prepare Data (ipdeny.com CIDR)
         run: |
@@ -109,22 +110,30 @@ jobs:
           		tag := strings.ToUpper(f.Name())
           		fmt.Printf("Packing tag: %s\n", tag)
           		var cidrsData []byte
-          		file, _ := os.Open(filepath.Join("./data", f.Name()))
+          		file, err := os.Open(filepath.Join("./data", f.Name()))
+          		if err != nil { log.Fatal(err) }
           		scanner := bufio.NewScanner(file)
+          		lineNo := 0
+          		count := 0
           		for scanner.Scan() {
+          			lineNo++
           			line := strings.TrimSpace(scanner.Text())
           			if line == "" || strings.HasPrefix(line, "#") { continue }
           			_, ipnet, err := net.ParseCIDR(line)
-          			if err == nil {
-          				ip := ipnet.IP.To4()
-          				if ip == nil { ip = ipnet.IP.To16() }
-          				mask, _ := ipnet.Mask.Size()
-          				c := encodeField(1, 2, ip)
-          				c = append(c, encodeField(2, 0, writeVarint(uint32(mask)))...)
-          				cidrsData = append(cidrsData, encodeField(2, 2, c)...)
+          			if err != nil {
+          				log.Fatalf("%s:%d: invalid CIDR %q: %v", f.Name(), lineNo, line, err)
           			}
+          			ip := ipnet.IP.To4()
+          			if ip == nil { ip = ipnet.IP.To16() }
+          			mask, _ := ipnet.Mask.Size()
+          			c := encodeField(1, 2, ip)
+          			c = append(c, encodeField(2, 0, writeVarint(uint32(mask)))...)
+          			cidrsData = append(cidrsData, encodeField(2, 2, c)...)
+          			count++
           		}
+          		if err := scanner.Err(); err != nil { log.Fatal(err) }
           		file.Close()
+          		fmt.Printf("  %s: %d ranges\n", tag, count)
           		geoIPData := encodeField(1, 2, []byte(tag))
           		geoIPData = append(geoIPData, cidrsData...)
           		allEntries = append(allEntries, encodeField(1, 2, geoIPData)...)
