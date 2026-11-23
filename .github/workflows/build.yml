@@ -46,6 +46,24 @@ jobs:
           sed -i '/^$/d' data/ru
           sed -i '/^#/d' data/ru
           
+          # Объединяем соседние и вложенные диапазоны (покрытие не меняется)
+          python3 - <<'PY'
+          import ipaddress as ip
+          nets = []
+          for line in open('data/ru'):
+              s = line.strip()
+              if s and not s.startswith('#'):
+                  nets.append(ip.ip_network(s, strict=False))
+          if not nets:
+              raise SystemExit("ERROR: no valid CIDR found in data/ru")
+          v4 = [n for n in nets if n.version == 4]
+          v6 = [n for n in nets if n.version == 6]
+          out = list(ip.collapse_addresses(v4)) + list(ip.collapse_addresses(v6))
+          with open('data/ru', 'w') as f:
+              f.write('\n'.join(str(n) for n in out) + '\n')
+          print(f"Aggregated: {len(nets)} -> {len(out)} ranges")
+          PY
+          
           # Считаем количество диапазонов и сохраняем в ENV для релиза
           RANGES_COUNT=$(wc -l < data/ru)
           echo "RANGES_COUNT=$RANGES_COUNT" >> $GITHUB_ENV
